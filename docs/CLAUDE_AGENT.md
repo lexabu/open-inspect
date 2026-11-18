@@ -26,10 +26,10 @@ workspace setting (global only, OpenCode by default) and a per-user choice in Ap
 resolved model, the bot replies with an explanation and creates no session instead of falling back
 to OpenCode.
 
-| Harness          | Models                | Anthropic authentication                   | Notes                                 |
-| ---------------- | --------------------- | ------------------------------------------ | ------------------------------------- |
-| **OpenCode**     | Every catalog model   | `ANTHROPIC_API_KEY` only                   | Built-in; the default                 |
-| **Claude Agent** | Anthropic models only | `ANTHROPIC_API_KEY` or a connected account | Reads repository `CLAUDE.md` natively |
+| Harness          | Models                | Anthropic authentication                                                              | Notes                                 |
+| ---------------- | --------------------- | ------------------------------------------------------------------------------------- | ------------------------------------- |
+| **OpenCode**     | Every catalog model   | `ANTHROPIC_API_KEY` only                                                              | Built-in; the default                 |
+| **Claude Agent** | Anthropic models only | `ANTHROPIC_API_KEY`, [Amazon Bedrock](#run-on-amazon-bedrock), or a connected account | Reads repository `CLAUDE.md` natively |
 
 The composer shows a harness menu beside the model picker; the model list is filtered to what the
 chosen harness can run. A per-message model override that the session's harness cannot run is
@@ -194,8 +194,9 @@ at create.
    **clean-credential wrapper**: the child sees the sandbox environment exactly as OpenCode does
    (the sandbox token, `SESSION_CONFIG`, user secrets, proxies) minus the Anthropic credentials of
    the other mode, so it holds exactly one Anthropic credential (`CLAUDE_CODE_OAUTH_TOKEN` in
-   account mode, `ANTHROPIC_API_KEY` in key mode), never both. Open-Inspect writes the token nowhere
-   on disk, so a snapshot carries no credential of its own and a restore re-fetches.
+   account mode, `ANTHROPIC_API_KEY` or a Bedrock key in key mode), never both. Open-Inspect writes
+   the token nowhere on disk, so a snapshot carries no credential of its own and a restore
+   re-fetches.
 
 Code the agent runs from Bash, and any hooks the repository's `.claude/` settings register, run as
 children of the `claude` process and inherit its environment, so repository code can read the token,
@@ -205,6 +206,49 @@ and user shells never see the Claude token), not deliberate exfiltration by code
 to run or a hook the repository configures, and what such code persists to disk is that same
 accepted exposure. The sandbox helpers (`oi-git-sign`, `oi-git-credentials`, `upload-media`) need
 the session context, which is why it passes through.
+
+---
+
+## Run on Amazon Bedrock
+
+A deployment can run every Claude Agent session that does not use a connected Claude account (Slack,
+GitHub and Linear bot sessions, automations, and sessions set to **No account (API key)**) on Claude
+in Amazon Bedrock instead of the Claude API. Sessions on a connected account keep using the
+subscription, and OpenCode sessions are unaffected.
+
+1. Create an IAM user whose policy allows `bedrock:InvokeModel` and
+   `bedrock:InvokeModelWithResponseStream` on the Claude inference profiles and the models they
+   route to, plus `bedrock:CallWithBearerToken`. Enable the Claude models for the AWS account in the
+   Amazon Bedrock console.
+2. Set the user's access key and the Region in `terraform.tfvars` (all three, or none):
+
+   ```hcl
+   bedrock_aws_access_key_id     = "AKIA..."
+   bedrock_aws_secret_access_key = "<secret access key>"
+   bedrock_aws_region            = "us-east-1"
+   ```
+
+   These become the control plane's `BEDROCK_AWS_ACCESS_KEY_ID`, `BEDROCK_AWS_SECRET_ACCESS_KEY` and
+   `BEDROCK_AWS_REGION`. A partial configuration fails every session loudly rather than falling back
+   to another credential.
+
+The IAM key never enters a sandbox. At every sandbox create and snapshot restore, the control plane
+signs a short-term Amazon Bedrock API key (Bedrock-only, valid for 12 hours) and adds
+`CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION` and `AWS_BEARER_TOKEN_BEDROCK` to that sandbox's
+environment. With those set the CLI calls Bedrock and ignores `ANTHROPIC_API_KEY`, so Bedrock takes
+precedence over any Anthropic key for these sessions. Model ids stay the same: the CLI maps
+`claude-sonnet-5-5` to the `us.anthropic.claude-sonnet-5-5` inference profile. In account mode the
+clean-credential wrapper strips both Bedrock variables, so the subscription is always what runs.
+
+The key is minted per launch, so a session that outlives 12 hours keeps working across sandbox
+restarts. A single sandbox that stays up longer than that (only possible with a sandbox timeout
+above 12 hours) loses Bedrock access until its next launch, and on providers that resume a stopped
+sandbox in place (Daytona, E2B, Boat) a resume more than 12 hours after the sandbox was created
+keeps the expired key; Modal creates or restores a sandbox on every start.
+
+The same IAM key can also serve the Slack and Linear classifiers: with a `bedrock/...`
+`classification_model` and `classification_bedrock_api_key` left blank, they mint a short-term key
+for every request in the model's Region.
 
 ---
 

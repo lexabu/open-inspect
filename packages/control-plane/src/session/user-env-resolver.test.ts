@@ -7,7 +7,7 @@
  * return surface rather than the fakes.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { UserEnvResolver } from "./user-env-resolver";
 import { resolveSessionRepoId } from "./repo-id-resolution";
 import {
@@ -23,6 +23,7 @@ import type { SqlDatabase, SqlResult, SqlStatement } from "../db/sql-database";
 import type { SqlResult as StorageSqlResult, SqlStorage } from "./sql-storage";
 import type { SessionProviderAuthMode } from "@open-inspect/shared/types/provider-accounts";
 import type { SessionRepositoryRow, SessionRow } from "./types";
+import type { BedrockSandboxConfig } from "../sandbox/bedrock-env";
 
 const ENCRYPTION_KEY = generateEncryptionKey();
 
@@ -257,6 +258,7 @@ function makeHarness(
     /** Omit to model an unset SECRETS_CAP_ENFORCEMENT (fail-closed enforce). */
     capEnforcement?: string;
     resolveRepoId?: (session: SessionRow) => Promise<number>;
+    bedrock?: BedrockSandboxConfig;
   } = {}
 ) {
   const session = options.session === undefined ? sessionRow() : options.session;
@@ -308,6 +310,7 @@ function makeHarness(
     durableObjectId: "do-id-fallback",
     repoSecretsEncryptionKey: options.encryptionKey ?? ENCRYPTION_KEY,
     secretsCapEnforcement: options.capEnforcement,
+    bedrock: options.bedrock ?? null,
     log,
   });
 
@@ -369,6 +372,67 @@ describe("UserEnvResolver", () => {
         OPENAI_API_KEY: "sk-user",
         KEEP: "1",
       });
+    });
+  });
+
+  describe("Bedrock for Claude Agent API-key sessions", () => {
+    const BEDROCK: BedrockSandboxConfig = {
+      accessKey: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "iam-secret" },
+      region: "us-east-1",
+    };
+
+    it("adds a freshly minted short-term key and never the IAM key", async () => {
+      const h = makeHarness({ session: sessionRow({ harness: "claude" }), bedrock: BEDROCK });
+      h.db.providerAuthRows = providerAuthRows(API_KEY_MODES);
+      h.db.globalSecretRows = await secretRows({ KEEP: "1" });
+
+      const env = await h.resolver.getUserEnvVars();
+
+      expect(env).toMatchObject({
+        KEEP: "1",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        AWS_REGION: "us-east-1",
+        AWS_BEARER_TOKEN_BEDROCK: expect.stringMatching(/^bedrock-api-key-/),
+      });
+      expect(JSON.stringify(env)).not.toContain("iam-secret");
+      expect(JSON.stringify(h.logs)).not.toContain(env?.AWS_BEARER_TOKEN_BEDROCK);
+    });
+
+    it("mints a new key for every launch", async () => {
+      const h = makeHarness({ session: sessionRow({ harness: "claude" }), bedrock: BEDROCK });
+      h.db.providerAuthRows = providerAuthRows(API_KEY_MODES);
+
+      vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-17T00:00:00Z") });
+      try {
+        const first = await h.resolver.getUserEnvVars();
+        vi.setSystemTime(new Date("2026-11-17T13:00:00Z"));
+        const second = await h.resolver.getUserEnvVars();
+
+        expect(second?.AWS_BEARER_TOKEN_BEDROCK).not.toBe(first?.AWS_BEARER_TOKEN_BEDROCK);
+        expect(
+          atob((second?.AWS_BEARER_TOKEN_BEDROCK ?? "").slice("bedrock-api-key-".length))
+        ).toContain("X-Amz-Date=20261117T130000Z");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([
+      {
+        label: "a connected Claude account",
+        harness: "claude" as const,
+        modes: { ...API_KEY_MODES, anthropic: "provider_account" as const },
+      },
+      { label: "the OpenCode harness", harness: "opencode" as const, modes: API_KEY_MODES },
+    ])("adds nothing for $label", async ({ harness, modes }) => {
+      const h = makeHarness({ session: sessionRow({ harness }), bedrock: BEDROCK });
+      h.db.providerAuthRows = providerAuthRows(modes);
+      h.db.accountRow = accountRow("active");
+
+      const env = (await h.resolver.getUserEnvVars()) ?? {};
+
+      expect(env).not.toHaveProperty("CLAUDE_CODE_USE_BEDROCK");
+      expect(env).not.toHaveProperty("AWS_BEARER_TOKEN_BEDROCK");
     });
   });
 

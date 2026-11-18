@@ -118,6 +118,42 @@ class TestSentinel:
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in child
         assert child["SANDBOX_AUTH_TOKEN"] == parent["SANDBOX_AUTH_TOKEN"]
 
+    def test_oauth_mode_strips_bedrock_so_the_subscription_is_used(self, tmp_path: Path) -> None:
+        wrapper = write_clean_env_wrapper(
+            tmp_path / "bin", mode=ClaudeAuthMode.OAUTH_TOKEN, binary=_fake_binary(tmp_path)
+        )
+        parent = _polluted_parent_env(
+            CLAUDE_CODE_USE_BEDROCK="1",
+            AWS_BEARER_TOKEN_BEDROCK="bedrock-api-key-x",
+            AWS_REGION="us-east-1",
+        )
+        options_env = harness_env(tmp_path / "cfg", ClaudeCredential.oauth_token("sk-ant-oat01-x"))
+        child = _run_wrapper(wrapper, {**parent, **options_env})["env"]
+
+        assert "CLAUDE_CODE_USE_BEDROCK" not in child
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in child
+        assert child["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-x"
+
+    def test_api_key_mode_forwards_bedrock(self, tmp_path: Path) -> None:
+        wrapper = write_clean_env_wrapper(
+            tmp_path / "bin", mode=ClaudeAuthMode.API_KEY, binary=_fake_binary(tmp_path)
+        )
+        parent = _polluted_parent_env(
+            CLAUDE_CODE_USE_BEDROCK="1",
+            AWS_BEARER_TOKEN_BEDROCK="bedrock-api-key-x",
+            AWS_REGION="us-east-1",
+        )
+        parent.pop("ANTHROPIC_API_KEY")
+        credential = ClaudeCredential.api_key(parent)
+        assert credential is not None
+        options_env = harness_env(tmp_path / "cfg", credential)
+        child = _run_wrapper(wrapper, {**parent, **options_env})["env"]
+
+        assert child == clean_child_env(parent, ClaudeAuthMode.API_KEY, options_env)
+        assert child["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        assert child["AWS_BEARER_TOKEN_BEDROCK"] == "bedrock-api-key-x"
+        assert child["AWS_REGION"] == "us-east-1"
+
     def test_wrapper_forwards_arguments_including_the_version_probe(self, tmp_path: Path) -> None:
         wrapper = write_clean_env_wrapper(
             tmp_path / "bin", mode=ClaudeAuthMode.OAUTH_TOKEN, binary=_fake_binary(tmp_path)
@@ -141,11 +177,16 @@ class TestDenylist:
         assert denylist_for(ClaudeAuthMode.OAUTH_TOKEN) == API_KEY_CREDENTIAL_VARS
         assert denylist_for(ClaudeAuthMode.API_KEY) == OAUTH_CREDENTIAL_VARS
 
-    def test_only_anthropic_credentials_are_ever_stripped(self) -> None:
+    def test_only_claude_credentials_are_ever_stripped(self) -> None:
         stripped = set(API_KEY_CREDENTIAL_VARS) | set(OAUTH_CREDENTIAL_VARS)
-        assert all(name.startswith(("ANTHROPIC_", "CLAUDE_CODE_OAUTH_")) for name in stripped)
+        bedrock = {"CLAUDE_CODE_USE_BEDROCK", "AWS_BEARER_TOKEN_BEDROCK"}
+        assert all(
+            name.startswith(("ANTHROPIC_", "CLAUDE_CODE_OAUTH_")) for name in stripped - bedrock
+        )
         for needed in ("SANDBOX_AUTH_TOKEN", "SESSION_CONFIG", "CONTROL_PLANE_URL", "PATH"):
             assert needed not in stripped
+        # The Region is not a credential; other AWS tooling in the sandbox may read it.
+        assert "AWS_REGION" not in stripped
 
     def test_api_key_credential_requires_the_key(self) -> None:
         assert ClaudeCredential.api_key({"ANTHROPIC_BASE_URL": "x"}) is None
@@ -154,6 +195,27 @@ class TestDenylist:
         )
         assert credential is not None
         assert dict(credential.env) == {"ANTHROPIC_API_KEY": "k", "ANTHROPIC_AUTH_TOKEN": "t"}
+
+    def test_bedrock_key_stands_in_for_the_api_key(self) -> None:
+        credential = ClaudeCredential.api_key(
+            {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_BEARER_TOKEN_BEDROCK": "bedrock-api-key-x"}
+        )
+        assert credential is not None
+        assert credential.mode is ClaudeAuthMode.API_KEY
+        assert dict(credential.env) == {
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-api-key-x",
+        }
+
+    def test_bedrock_needs_both_the_switch_and_the_key(self) -> None:
+        assert ClaudeCredential.api_key({"AWS_BEARER_TOKEN_BEDROCK": "k"}) is None
+        assert ClaudeCredential.api_key({"CLAUDE_CODE_USE_BEDROCK": "1"}) is None
+        assert (
+            ClaudeCredential.api_key(
+                {"CLAUDE_CODE_USE_BEDROCK": "0", "AWS_BEARER_TOKEN_BEDROCK": "k"}
+            )
+            is None
+        )
 
     def test_harness_env_keeps_sub_agents_in_the_foreground(self, tmp_path: Path) -> None:
         # A background sub-agent would let the turn end before its work is done

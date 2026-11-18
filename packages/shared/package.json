@@ -38,6 +38,10 @@
       "import": "./dist/classification.js",
       "types": "./dist/classification.d.ts"
     },
+    "./bedrock-api-key": {
+      "import": "./dist/bedrock-api-key.js",
+      "types": "./dist/bedrock-api-key.d.ts"
+    },
     "./logger": {
       "import": "./dist/logger.js",
       "types": "./dist/logger.d.ts"

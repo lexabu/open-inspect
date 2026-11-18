@@ -222,7 +222,7 @@ export async function classifyRepo(
 
   let target: ClassificationTarget;
   try {
-    target = resolveClassificationTarget(env);
+    target = await resolveClassificationTarget(env);
   } catch (e) {
     return askForRepo(e);
   }

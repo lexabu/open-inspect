@@ -7,6 +7,8 @@
  * absence always means a broken deployment.
  */
 
+import { readBedrockAccessKey } from "@open-inspect/shared/bedrock-api-key";
+import type { BedrockSandboxConfig } from "./sandbox/bedrock-env";
 import type { EnvConfig } from "./types";
 
 /** Strict base64 — rejects whitespace and stray characters `atob` may accept. */
@@ -57,4 +59,33 @@ export function requireRepoSecretsEncryptionKey(
 
 export function requireTokenEncryptionKey(env: Pick<EnvConfig, "TOKEN_ENCRYPTION_KEY">): string {
   return requireEncryptionKey(env.TOKEN_ENCRYPTION_KEY, "TOKEN_ENCRYPTION_KEY", "OAuth tokens");
+}
+
+/** AWS Region code such as `us-east-1`; the classifier's Bedrock model ids use the same shape. */
+const AWS_REGION_PATTERN = /^[a-z]{2}(?:-[a-z]+)+-[0-9]+$/;
+
+/**
+ * The IAM access key and Region that mint sandboxes' short-term Bedrock keys,
+ * or null when the deployment leaves Bedrock off (all three unset). A partial
+ * or malformed configuration throws rather than quietly running Claude
+ * sessions on another credential.
+ */
+export function resolveBedrockSandboxConfig(
+  env: Pick<
+    EnvConfig,
+    "BEDROCK_AWS_ACCESS_KEY_ID" | "BEDROCK_AWS_SECRET_ACCESS_KEY" | "BEDROCK_AWS_REGION"
+  >
+): BedrockSandboxConfig | null {
+  const accessKey = readBedrockAccessKey(env);
+  const region = env.BEDROCK_AWS_REGION?.trim() ?? "";
+  if (!accessKey && !region) return null;
+  if (!accessKey) {
+    throw new Error(
+      "BEDROCK_AWS_REGION is set without BEDROCK_AWS_ACCESS_KEY_ID and BEDROCK_AWS_SECRET_ACCESS_KEY"
+    );
+  }
+  if (!AWS_REGION_PATTERN.test(region)) {
+    throw new Error(`BEDROCK_AWS_REGION must be an AWS Region such as us-east-1, got "${region}"`);
+  }
+  return { accessKey, region };
 }

@@ -8,6 +8,11 @@
  */
 
 import { z } from "zod";
+import {
+  mintBedrockApiKey,
+  readBedrockAccessKey,
+  type BedrockAccessKeyEnv,
+} from "./bedrock-api-key";
 
 /**
  * Model the classifiers use when a deployment sets no override.
@@ -43,9 +48,11 @@ export type ClassificationModel =
 
 /**
  * Worker bindings a classifier reads: the model id and each provider's key.
- * A deployment binds only the key its model's provider needs.
+ * A deployment binds only the credential its model's provider needs; Bedrock
+ * takes either a long-term `BEDROCK_API_KEY` or the IAM access key that mints
+ * a short-term one per request.
  */
-export interface ClassificationEnv {
+export interface ClassificationEnv extends BedrockAccessKeyEnv {
   CLASSIFICATION_MODEL?: string;
   /** OpenAI only; unset preserves the model's default effort. */
   CLASSIFICATION_REASONING_EFFORT?: string;
@@ -99,12 +106,6 @@ const MODEL_ID_PATTERNS = {
     /^bedrock\/(?<region>[a-z]{2}(?:-[a-z]+)+-[0-9]+)\/(?<model>(?:[a-z]+(?:-[a-z]+)?\.)?anthropic\.claude-[a-z0-9-]+(?::[0-9]+)?)$/,
 } satisfies Record<ClassificationProvider, RegExp>;
 
-const CREDENTIAL_BINDING = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  bedrock: "BEDROCK_API_KEY",
-} as const satisfies Record<ClassificationProvider, keyof ClassificationEnv>;
-
 /**
  * Parse a classification model id into its provider, the model id sent to
  * that provider, and the AWS Region for Bedrock.
@@ -135,29 +136,42 @@ export function parseClassificationModel(modelId: string): ClassificationModel {
  * Resolve the endpoint, credential, and model that serve the configured
  * classification model.
  *
- * Only the selected provider's key is bound to each classifier Worker. Throw
- * before any request when the binding and model selection disagree, rather
- * than reporting the provider's authentication error.
+ * Only the selected provider's credential is bound to each classifier Worker.
+ * Throw before any request when the binding and model selection disagree,
+ * rather than reporting the provider's authentication error. A Bedrock model
+ * prefers a long-term `BEDROCK_API_KEY`; otherwise a short-term key is minted
+ * for this request in the model's Region.
  */
-export function resolveClassificationTarget(env: ClassificationEnv): ClassificationTarget {
+export async function resolveClassificationTarget(
+  env: ClassificationEnv
+): Promise<ClassificationTarget> {
   const modelId = env.CLASSIFICATION_MODEL || DEFAULT_CLASSIFICATION_MODEL;
   const parsed = parseClassificationModel(modelId);
-  const binding = CREDENTIAL_BINDING[parsed.provider];
-  const apiKey = env[binding];
-  if (!apiKey) {
-    throw new Error(`Classification model "${modelId}" requires ${binding} to be set`);
-  }
+  const missing = (binding: string) =>
+    new Error(`Classification model "${modelId}" requires ${binding} to be set`);
 
   switch (parsed.provider) {
-    case "anthropic":
+    case "anthropic": {
+      if (!env.ANTHROPIC_API_KEY) throw missing("ANTHROPIC_API_KEY");
       return {
         protocol: "anthropic-messages",
         provider: "anthropic",
         baseUrl: "https://api.anthropic.com",
-        apiKey,
+        apiKey: env.ANTHROPIC_API_KEY,
         model: parsed.model,
       };
-    case "bedrock":
+    }
+    case "bedrock": {
+      let apiKey = env.BEDROCK_API_KEY;
+      if (!apiKey) {
+        const accessKey = readBedrockAccessKey(env);
+        if (!accessKey) {
+          throw missing(
+            "BEDROCK_API_KEY (or BEDROCK_AWS_ACCESS_KEY_ID and BEDROCK_AWS_SECRET_ACCESS_KEY)"
+          );
+        }
+        apiKey = await mintBedrockApiKey(accessKey, parsed.region);
+      }
       return {
         protocol: "anthropic-messages",
         provider: "bedrock",
@@ -165,8 +179,16 @@ export function resolveClassificationTarget(env: ClassificationEnv): Classificat
         apiKey,
         model: parsed.model,
       };
-    case "openai":
-      return { protocol: "openai-chat", provider: "openai", apiKey, model: parsed.model };
+    }
+    case "openai": {
+      if (!env.OPENAI_API_KEY) throw missing("OPENAI_API_KEY");
+      return {
+        protocol: "openai-chat",
+        provider: "openai",
+        apiKey: env.OPENAI_API_KEY,
+        model: parsed.model,
+      };
+    }
   }
 }
 

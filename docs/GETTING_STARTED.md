@@ -269,7 +269,11 @@ Region you choose.
 4. Record the key's expiry date. AWS recommends long-term keys for exploration only, and each key
    expires on the date set when you create it. Rotate `classification_bedrock_api_key` before that
    date. Do not use a short-term key. It expires within 12 hours, and after that every
-   classification falls back to asking the user.
+   classification falls back to asking the user. To avoid a long-term key, leave
+   `classification_bedrock_api_key` blank and set `bedrock_aws_access_key_id` and
+   `bedrock_aws_secret_access_key` for an IAM user with the same permissions instead. The
+   classifiers then mint a short-term key for every request (see
+   [Run on Amazon Bedrock](CLAUDE_AGENT.md#run-on-amazon-bedrock)).
 5. Set the model and key in `terraform.tfvars`. The model ID is `bedrock/<aws-region>/` followed by
    the inference profile ID:
 
@@ -1457,7 +1461,9 @@ Secrets for credentials:
 | `ANTHROPIC_API_KEY`                        | Optional; reaches Modal sandboxes; classifier fallback                                                                            |
 | `CLASSIFICATION_ANTHROPIC_API_KEY`         | Optional classifier-only Anthropic key; never reaches sandboxes                                                                   |
 | `CLASSIFICATION_OPENAI_API_KEY`            | Classifier OpenAI key (required when `classification_model` is an OpenAI id)                                                      |
-| `CLASSIFICATION_BEDROCK_API_KEY`           | Classifier Amazon Bedrock API key (required when `classification_model` is a Bedrock id)                                          |
+| `CLASSIFICATION_BEDROCK_API_KEY`           | Classifier Amazon Bedrock API key (required when `classification_model` is a Bedrock id and no `BEDROCK_AWS_*` key is set)        |
+| `BEDROCK_AWS_ACCESS_KEY_ID`                | Optional IAM key that mints short-term Bedrock keys; set with `BEDROCK_AWS_SECRET_ACCESS_KEY` (see `docs/CLAUDE_AGENT.md`)        |
+| `BEDROCK_AWS_SECRET_ACCESS_KEY`            | Secret for `BEDROCK_AWS_ACCESS_KEY_ID`                                                                                            |
 | `OPENAI_API_KEY`                           | Optional OpenAI API key used when a session selects API-key authentication                                                        |
 | `XAI_API_KEY`                              | Optional xAI API key used when a session selects API-key authentication                                                           |
 | `DEEPSEEK_API_KEY`                         | DeepSeek API key (optional, required only for DeepSeek models)                                                                    |

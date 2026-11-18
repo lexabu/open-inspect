@@ -37,6 +37,10 @@ export interface EnvConfig {
   SERVICE_AUTH_SECRET_GITHUB_BOT?: string;
   SERVICE_AUTH_SECRET_LINEAR_BOT?: string;
   SLACK_BOT_TOKEN?: string; // Slack bot token for agent-initiated chat.postMessage calls
+  // IAM access key that mints short-term Bedrock keys for Claude Agent API-key
+  // sessions; it never enters a sandbox. Set with BEDROCK_AWS_REGION, or not at all.
+  BEDROCK_AWS_ACCESS_KEY_ID?: string;
+  BEDROCK_AWS_SECRET_ACCESS_KEY?: string;
 
   // GitHub App secrets (for git operations)
   GITHUB_APP_ID?: string;
@@ -61,6 +65,7 @@ export interface EnvConfig {
   UNSAFE_ALLOW_ALL_USERS?: string;
   CF_ACCOUNT_ID?: string; // Cloudflare account ID
   SANDBOX_PROVIDER?: string; // "modal" (default), "modal-vm", "daytona", "vercel", "e2b", or "boat"
+  BEDROCK_AWS_REGION?: string; // Region Claude Agent sessions call Bedrock in; see BEDROCK_AWS_ACCESS_KEY_ID
   MODAL_WORKSPACE?: string; // Modal workspace name
   MODAL_ENVIRONMENT?: string; // Modal environment name for dashboard URLs
   MODAL_ENVIRONMENT_WEB_SUFFIX?: string; // Modal environment web suffix for endpoint URLs

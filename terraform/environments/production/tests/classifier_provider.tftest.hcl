@@ -511,3 +511,95 @@ run "classifier_grammar_matches_the_shared_fixtures" {
     error_message = "local.classifier_model_patterns disagrees with parseClassificationModel on a shared fixture id."
   }
 }
+
+# Without a long-term Bedrock key the classifiers mint short-term keys from the
+# IAM access key, which then is the only Bedrock credential they receive.
+run "bedrock_classifier_mints_from_the_iam_key" {
+  command = plan
+
+  variables {
+    classification_model          = "bedrock/us-east-1/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    bedrock_aws_access_key_id     = "AKIDEXAMPLE"
+    bedrock_aws_secret_access_key = "test-iam-secret"
+  }
+
+  assert {
+    condition = (
+      toset(keys(local.classifier_secret_bindings)) == toset(["BEDROCK_AWS_ACCESS_KEY_ID", "BEDROCK_AWS_SECRET_ACCESS_KEY"]) &&
+      contains(module.slack_bot_worker[0].secret_binding_names, "BEDROCK_AWS_SECRET_ACCESS_KEY") &&
+      contains(module.linear_bot_worker[0].secret_binding_names, "BEDROCK_AWS_SECRET_ACCESS_KEY") &&
+      !contains(module.slack_bot_worker[0].secret_binding_names, "BEDROCK_API_KEY")
+    )
+    error_message = "A Bedrock classifier without a long-term key must bind only the IAM access key on both bots."
+  }
+
+  # No Region: Claude Agent sandboxes stay off Bedrock.
+  assert {
+    condition = (
+      !contains(module.control_plane_worker.secret_binding_names, "BEDROCK_AWS_ACCESS_KEY_ID") &&
+      !contains(module.control_plane_worker.plain_text_binding_names, "BEDROCK_AWS_REGION")
+    )
+    error_message = "The control plane must not receive the IAM key unless bedrock_aws_region is set."
+  }
+}
+
+run "bedrock_classifier_prefers_the_long_term_key" {
+  command = plan
+
+  variables {
+    classification_model           = "bedrock/us-east-1/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    classification_bedrock_api_key = "test-bedrock-key"
+    bedrock_aws_access_key_id      = "AKIDEXAMPLE"
+    bedrock_aws_secret_access_key  = "test-iam-secret"
+  }
+
+  assert {
+    condition     = toset(keys(local.classifier_secret_bindings)) == toset(["BEDROCK_API_KEY"])
+    error_message = "A long-term Bedrock key must be the classifiers' only Bedrock credential."
+  }
+}
+
+run "bedrock_region_puts_claude_sandboxes_on_bedrock" {
+  command = plan
+
+  variables {
+    bedrock_aws_access_key_id     = "AKIDEXAMPLE"
+    bedrock_aws_secret_access_key = "test-iam-secret"
+    bedrock_aws_region            = "us-east-1"
+  }
+
+  assert {
+    condition = (
+      contains(module.control_plane_worker.secret_binding_names, "BEDROCK_AWS_ACCESS_KEY_ID") &&
+      contains(module.control_plane_worker.secret_binding_names, "BEDROCK_AWS_SECRET_ACCESS_KEY") &&
+      contains(module.control_plane_worker.plain_text_binding_names, "BEDROCK_AWS_REGION")
+    )
+    error_message = "With a Region set the control plane must receive the IAM key and Region."
+  }
+
+  # An Anthropic classifier keeps its key; the IAM key is not bound to the bots.
+  assert {
+    condition     = !contains(module.slack_bot_worker[0].secret_binding_names, "BEDROCK_AWS_ACCESS_KEY_ID")
+    error_message = "An Anthropic classifier must not receive the IAM key."
+  }
+}
+
+run "bedrock_region_requires_the_iam_key" {
+  command = plan
+
+  variables {
+    bedrock_aws_region = "us-east-1"
+  }
+
+  expect_failures = [var.bedrock_aws_region]
+}
+
+run "bedrock_iam_key_must_be_complete" {
+  command = plan
+
+  variables {
+    bedrock_aws_access_key_id = "AKIDEXAMPLE"
+  }
+
+  expect_failures = [var.bedrock_aws_access_key_id]
+}

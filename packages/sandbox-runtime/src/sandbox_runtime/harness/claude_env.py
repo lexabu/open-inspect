@@ -30,13 +30,22 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+# Claude in Amazon Bedrock: the control plane mints a short-term Bedrock key
+# per launch for API-key sessions. With both set the CLI calls Bedrock (in
+# ``AWS_REGION``) and ignores ``ANTHROPIC_API_KEY``.
+BEDROCK_ENABLE_ENV_VAR: Final = "CLAUDE_CODE_USE_BEDROCK"
+BEDROCK_TOKEN_ENV_VAR: Final = "AWS_BEARER_TOKEN_BEDROCK"
+
 # Credential variables per auth mode. Exactly one mode is ever active: the
 # child sees either the key family or the OAuth token, never both, so the
-# family of the *other* mode is what the wrapper strips.
+# family of the *other* mode is what the wrapper strips. Bedrock belongs to
+# the key family, so a connected subscription never runs on it.
 API_KEY_CREDENTIAL_VARS: Final[tuple[str, ...]] = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
+    BEDROCK_ENABLE_ENV_VAR,
+    BEDROCK_TOKEN_ENV_VAR,
 )
 OAUTH_CREDENTIAL_VARS: Final[tuple[str, ...]] = ("CLAUDE_CODE_OAUTH_TOKEN",)
 
@@ -125,8 +134,12 @@ class ClaudeCredential:
 
     @classmethod
     def api_key(cls, environ: Mapping[str, str]) -> ClaudeCredential | None:
-        """Adopt the bridge's Anthropic key family (a user-configured gateway keeps working)."""
-        if not environ.get(API_KEY_ENV_VAR):
+        """Adopt the bridge's Anthropic key family (a user-configured gateway keeps working).
+
+        A Bedrock key stands in for ``ANTHROPIC_API_KEY`` when the deployment
+        routes Claude sessions through Amazon Bedrock.
+        """
+        if not environ.get(API_KEY_ENV_VAR) and not uses_bedrock(environ):
             return None
         return cls(
             ClaudeAuthMode.API_KEY,
@@ -136,6 +149,12 @@ class ClaudeCredential:
     @classmethod
     def oauth_token(cls, token: str) -> ClaudeCredential:
         return cls(ClaudeAuthMode.OAUTH_TOKEN, {OAUTH_TOKEN_ENV_VAR: token})
+
+
+def uses_bedrock(environ: Mapping[str, str]) -> bool:
+    """Whether the CLI will call Bedrock: enabled by its truthy rule, with a key to call it with."""
+    enabled = environ.get(BEDROCK_ENABLE_ENV_VAR, "").strip().lower() in {"1", "true", "yes", "on"}
+    return enabled and bool(environ.get(BEDROCK_TOKEN_ENV_VAR))
 
 
 def denylist_for(mode: ClaudeAuthMode) -> tuple[str, ...]:

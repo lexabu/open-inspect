@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { generateEncryptionKey } from "./auth/crypto";
-import { requireRepoSecretsEncryptionKey, requireTokenEncryptionKey } from "./env-validation";
+import {
+  requireRepoSecretsEncryptionKey,
+  requireTokenEncryptionKey,
+  resolveBedrockSandboxConfig,
+} from "./env-validation";
 import type { Env } from "./types";
 
 function envWith(key: string | undefined): Env {
@@ -59,5 +63,32 @@ describe("requireTokenEncryptionKey", () => {
     expect(() =>
       requireTokenEncryptionKey({ TOKEN_ENCRYPTION_KEY: "dG9vc2hvcnQ=" } as Env)
     ).toThrow(/TOKEN_ENCRYPTION_KEY must decode to 32 bytes/);
+  });
+});
+
+describe("resolveBedrockSandboxConfig", () => {
+  const KEY = { BEDROCK_AWS_ACCESS_KEY_ID: "AKIDEXAMPLE", BEDROCK_AWS_SECRET_ACCESS_KEY: "s" };
+
+  it("is off when nothing is set", () => {
+    expect(resolveBedrockSandboxConfig({})).toBeNull();
+  });
+
+  it("returns the key and Region when all three are set", () => {
+    expect(resolveBedrockSandboxConfig({ ...KEY, BEDROCK_AWS_REGION: " us-east-1 " })).toEqual({
+      accessKey: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "s" },
+      region: "us-east-1",
+    });
+  });
+
+  it.each([
+    [{ BEDROCK_AWS_REGION: "us-east-1" }, /set without BEDROCK_AWS_ACCESS_KEY_ID/],
+    [{ ...KEY }, /must be an AWS Region/],
+    [{ ...KEY, BEDROCK_AWS_REGION: "US East" }, /must be an AWS Region/],
+    [
+      { BEDROCK_AWS_ACCESS_KEY_ID: "AKIDEXAMPLE", BEDROCK_AWS_REGION: "us-east-1" },
+      /must be set together/,
+    ],
+  ])("throws on a partial or malformed configuration %o", (env, message) => {
+    expect(() => resolveBedrockSandboxConfig(env)).toThrow(message);
   });
 });

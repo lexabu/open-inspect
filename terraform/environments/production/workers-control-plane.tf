@@ -105,6 +105,11 @@ module "control_plane_worker" {
       SANDBOX_BOOT_TIMEOUT_MS                  = { value = tostring(var.sandbox_boot_timeout_ms) }
       TEAMS_ENFORCEMENT                        = { value = var.teams_enforcement }
     },
+    # Bedrock for Claude Agent sessions is on only with a Region; the IAM key
+    # alone may serve just the classifier bots.
+    trimspace(var.bedrock_aws_region) != "" ? {
+      BEDROCK_AWS_REGION = { value = trimspace(var.bedrock_aws_region) }
+    } : {},
     var.session_do_location_hint != "" ? {
       SESSION_DO_LOCATION_HINT = { value = var.session_do_location_hint }
     } : {},
@@ -217,6 +222,8 @@ module "control_plane_worker" {
     trimspace(var.boat_api_key) != "" ? {
       BOAT_API_KEY = { value = var.boat_api_key }
     } : {},
+    # Signs each sandbox launch's short-term Bedrock key; never sent to a sandbox.
+    trimspace(var.bedrock_aws_region) != "" ? local.bedrock_access_key_bindings : {},
     # Slack bot token enables the agent-initiated `slack-notify` endpoint.
     # Shares the variable with the slack-bot worker; bound here so the same
     # token can authorize chat.postMessage from agent tool calls.

@@ -68,10 +68,26 @@ locals {
     : var.anthropic_api_key
   )
 
+  # IAM access key that signs short-term Bedrock API keys: the control plane's
+  # for Claude Agent sandboxes, the classifier bots' when no long-term key is set.
+  bedrock_access_key_configured = (
+    trimspace(var.bedrock_aws_access_key_id) != "" && trimspace(var.bedrock_aws_secret_access_key) != ""
+  )
+  bedrock_access_key_bindings = local.bedrock_access_key_configured ? {
+    BEDROCK_AWS_ACCESS_KEY_ID     = { value = trimspace(var.bedrock_aws_access_key_id) }
+    BEDROCK_AWS_SECRET_ACCESS_KEY = { value = trimspace(var.bedrock_aws_secret_access_key) }
+  } : {}
+
+  # A long-term Bedrock key wins; without one the classifier mints its own.
+  classifier_bedrock_bindings = (trimspace(var.classification_bedrock_api_key) != ""
+    ? { BEDROCK_API_KEY = { value = var.classification_bedrock_api_key } }
+    : local.bedrock_access_key_bindings
+  )
+
   classifier_secret_bindings = local.classifier_provider == null ? {} : {
     anthropic = { ANTHROPIC_API_KEY = { value = local.classifier_anthropic_api_key } }
     openai    = { OPENAI_API_KEY = { value = var.classification_openai_api_key } }
-    bedrock   = { BEDROCK_API_KEY = { value = var.classification_bedrock_api_key } }
+    bedrock   = local.classifier_bedrock_bindings
   }[local.classifier_provider]
 
   # Bound only when set, so an unconfigured classifier keeps the model default.

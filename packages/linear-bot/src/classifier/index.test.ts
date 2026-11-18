@@ -609,6 +609,30 @@ describe("classifyRepo provider dispatch", () => {
     expect(body.model).toBe("us.anthropic.claude-haiku-4-5-20251001-v1:0");
   });
 
+  it("mints a short-term Bedrock key from the IAM access key when no Bedrock key is bound", async () => {
+    const { kv } = createFakeKV();
+    const env = makeLinearBotEnv(kv, {
+      CONTROL_PLANE: twoRepoControlPlane(),
+      CLASSIFICATION_MODEL: "bedrock/us-east-1/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      BEDROCK_AWS_ACCESS_KEY_ID: "AKIDEXAMPLE",
+      BEDROCK_AWS_SECRET_ACCESS_KEY: "secret",
+    });
+
+    const fetchMock = anthropicToolResponse("acme/beta");
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await classify(env);
+
+    expect(result.repo?.id).toBe("acme/beta");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://bedrock-runtime.us-east-1.amazonaws.com/anthropic/v1/messages");
+    const apiKey = (init!.headers as Record<string, string>)["x-api-key"];
+    expect(apiKey).toMatch(/^bedrock-api-key-/);
+    expect(atob(apiKey.slice("bedrock-api-key-".length))).toContain(
+      "X-Amz-Credential=AKIDEXAMPLE%2F"
+    );
+  });
+
   it("logs the Bedrock provider when Claude in Amazon Bedrock rejects the request", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { kv } = createFakeKV();

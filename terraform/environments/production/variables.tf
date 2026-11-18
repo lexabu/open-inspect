@@ -374,7 +374,7 @@ variable "classification_anthropic_api_key" {
 }
 
 variable "classification_model" {
-  description = "Model backing the Slack and Linear bots' target classifiers. An \"anthropic/\"-prefixed or bare \"claude-\" id is served by classification_anthropic_api_key (falling back to anthropic_api_key); an \"openai/\"-prefixed or bare \"gpt-\" id by classification_openai_api_key; a \"bedrock/<aws-region>/<inference-profile-id>\" id by classification_bedrock_api_key, through Claude in Amazon Bedrock in that Region."
+  description = "Model backing the Slack and Linear bots' target classifiers. An \"anthropic/\"-prefixed or bare \"claude-\" id is served by classification_anthropic_api_key (falling back to anthropic_api_key); an \"openai/\"-prefixed or bare \"gpt-\" id by classification_openai_api_key; a \"bedrock/<aws-region>/<inference-profile-id>\" id by classification_bedrock_api_key (or, when that is blank, a short-term key minted per request from bedrock_aws_access_key_id and bedrock_aws_secret_access_key), through Claude in Amazon Bedrock in that Region."
   type        = string
   default     = "claude-haiku-4-5"
   nullable    = false
@@ -412,7 +412,7 @@ variable "classification_openai_api_key" {
 }
 
 variable "classification_bedrock_api_key" {
-  description = "Amazon Bedrock API key used by the Slack and Linear bot classifiers when classification_model is a \"bedrock/<aws-region>/<inference-profile-id>\" id; never injected into sandboxes. For the key type and IAM permissions it needs, see \"Classify on Amazon Bedrock (Optional)\" in docs/GETTING_STARTED.md."
+  description = "Long-term Amazon Bedrock API key used by the Slack and Linear bot classifiers when classification_model is a \"bedrock/<aws-region>/<inference-profile-id>\" id; never injected into sandboxes. Leave blank to have the classifiers mint a short-term key per request from bedrock_aws_access_key_id and bedrock_aws_secret_access_key instead. For the key type and IAM permissions it needs, see \"Classify on Amazon Bedrock (Optional)\" in docs/GETTING_STARTED.md."
   type        = string
   sensitive   = true
   default     = ""
@@ -425,9 +425,46 @@ variable "classification_bedrock_api_key" {
     condition = (
       (var.enable_slack_bot == false && var.enable_linear_bot == false) ||
       local.classifier_provider != "bedrock" ||
-      trimspace(var.classification_bedrock_api_key) != ""
+      trimspace(var.classification_bedrock_api_key) != "" ||
+      local.bedrock_access_key_configured
     )
-    error_message = "classification_bedrock_api_key must be non-blank when the Slack or Linear bot is enabled and classification_model is a Bedrock model."
+    error_message = "classification_bedrock_api_key, or bedrock_aws_access_key_id and bedrock_aws_secret_access_key, must be non-blank when the Slack or Linear bot is enabled and classification_model is a Bedrock model."
+  }
+}
+
+variable "bedrock_aws_access_key_id" {
+  description = "Access key ID of an IAM user allowed to call Amazon Bedrock. The control plane and the classifier bots sign short-term (12-hour) Bedrock API keys with it; the IAM key itself never reaches a sandbox. Set together with bedrock_aws_secret_access_key. See \"Run on Amazon Bedrock\" in docs/CLAUDE_AGENT.md."
+  type        = string
+  sensitive   = true
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = (trimspace(var.bedrock_aws_access_key_id) == "") == (trimspace(var.bedrock_aws_secret_access_key) == "")
+    error_message = "bedrock_aws_access_key_id and bedrock_aws_secret_access_key must be set together."
+  }
+}
+
+variable "bedrock_aws_secret_access_key" {
+  description = "Secret access key paired with bedrock_aws_access_key_id."
+  type        = string
+  sensitive   = true
+  default     = ""
+  nullable    = false
+}
+
+variable "bedrock_aws_region" {
+  description = "AWS Region Claude Agent sessions call Amazon Bedrock in, such as \"us-east-1\". Setting it (with bedrock_aws_access_key_id) runs every Claude Agent session that does not use a connected Claude account on Bedrock, with a short-term key minted at each sandbox launch. Blank leaves sessions on ANTHROPIC_API_KEY."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition = (
+      trimspace(var.bedrock_aws_region) == "" ||
+      (can(regex("^[a-z]{2}(?:-[a-z]+)+-[0-9]+$", trimspace(var.bedrock_aws_region))) && local.bedrock_access_key_configured)
+    )
+    error_message = "bedrock_aws_region must be an AWS Region such as \"us-east-1\", and needs bedrock_aws_access_key_id and bedrock_aws_secret_access_key."
   }
 }
 

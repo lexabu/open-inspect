@@ -294,7 +294,10 @@ LINEAR_API_KEY # Optional; fallback comment posting
 ANTHROPIC_API_KEY # Optional; injected into Modal sandboxes and used by an Anthropic classifier when CLASSIFICATION_ANTHROPIC_API_KEY is unset
 CLASSIFICATION_ANTHROPIC_API_KEY # Optional; classifier-only Anthropic key that never reaches sandboxes
 CLASSIFICATION_OPENAI_API_KEY # Required when classification_model is an OpenAI model and the Slack or Linear bot is enabled
-CLASSIFICATION_BEDROCK_API_KEY # Required when classification_model is a Bedrock model and the Slack or Linear bot is enabled; see "Classify on Amazon Bedrock (Optional)" in docs/GETTING_STARTED.md
+CLASSIFICATION_BEDROCK_API_KEY # Required when classification_model is a Bedrock model and the Slack or Linear bot is enabled, unless the BEDROCK_AWS_* IAM key is set; see "Classify on Amazon Bedrock (Optional)" in docs/GETTING_STARTED.md
+BEDROCK_AWS_ACCESS_KEY_ID # Optional IAM key that mints short-term Bedrock keys (Claude Agent sandboxes, classifiers); see "Run on Amazon Bedrock" in docs/CLAUDE_AGENT.md
+BEDROCK_AWS_SECRET_ACCESS_KEY # Set with BEDROCK_AWS_ACCESS_KEY_ID
+# Repository variable BEDROCK_AWS_REGION turns on Bedrock for Claude Agent sandboxes
 
 # Security Secrets
 TOKEN_ENCRYPTION_KEY

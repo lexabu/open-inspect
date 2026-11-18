@@ -326,7 +326,7 @@ export class RepoClassifier {
 
     let llmTarget: ClassificationTarget;
     try {
-      llmTarget = resolveClassificationTarget(this.env);
+      llmTarget = await resolveClassificationTarget(this.env);
     } catch (e) {
       return offerPicker(e);
     }

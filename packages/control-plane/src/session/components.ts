@@ -68,7 +68,7 @@ import type { SandboxSettings } from "@open-inspect/shared/types/integrations";
 import { createSourceControlProviderFromEnv, type SourceControlProvider } from "../source-control";
 import { resolveSessionCredentialScope } from "../source-control/session-scope";
 import { readCachedInstallationRepositories } from "../repos/cache";
-import { requireRepoSecretsEncryptionKey } from "../env-validation";
+import { requireRepoSecretsEncryptionKey, resolveBedrockSandboxConfig } from "../env-validation";
 import type { Env, ClientInfo } from "../types";
 import type { SessionRow } from "./types";
 import type { SqlDatabase } from "../db/sql-database";
@@ -365,6 +365,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     durableObjectId,
     repoSecretsEncryptionKey,
     secretsCapEnforcement: env.SECRETS_CAP_ENFORCEMENT,
+    bedrock: resolveBedrockSandboxConfig(env),
     log,
   });
 

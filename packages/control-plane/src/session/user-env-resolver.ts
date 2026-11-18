@@ -1,8 +1,10 @@
 /**
  * Resolves the user-defined environment a session's sandbox receives: decrypts
  * and folds global/team/repo/environment secrets, derives the managed-provider env
- * from the session's provider auth modes, and answers whether a model's
- * provider has usable authentication in that environment. Legacy session rows
+ * from the session's provider auth modes, adds a freshly minted Bedrock key for
+ * Claude Agent API-key sessions when the deployment configures Bedrock, and
+ * answers whether a model's provider has usable authentication in that
+ * environment. Legacy session rows
  * that predate `repo_id` resolve it through the injected `resolveRepoId`
  * capability when the repo-scoped secrets lookup needs it.
  */
@@ -28,6 +30,8 @@ import {
 } from "@open-inspect/shared/types/provider-accounts";
 import { ModelProviderAccountStore } from "../db/model-provider-accounts";
 import type { SqlDatabase } from "../db/sql-database";
+import type { HarnessId } from "@open-inspect/shared/harnesses";
+import { claudeBedrockEnv, type BedrockSandboxConfig } from "../sandbox/bedrock-env";
 import type { Logger } from "../logger";
 import { resolvePublicSessionId } from "./public-session-id";
 import { buildSessionTargetSecretSources } from "./session-target-secrets";
@@ -51,11 +55,14 @@ export interface UserEnvResolverDeps {
   durableObjectId: string;
   repoSecretsEncryptionKey: string;
   secretsCapEnforcement: string | undefined;
+  /** Mints each launch's short-term Bedrock key; null when the deployment leaves Bedrock off. */
+  bedrock: BedrockSandboxConfig | null;
   /** The session-scoped logger; the composition root creates it before this class. */
   log: Logger;
 }
 
 interface UserEnvContext {
+  harness: HarnessId;
   sandboxEnv: Record<string, string>;
   providerAuthModes: Record<SubscriptionProviderId, SessionProviderAuthMode>;
   /** Bound account per provider in provider_account mode. */
@@ -69,6 +76,7 @@ export class UserEnvResolver {
   private readonly durableObjectId: string;
   private readonly repoSecretsEncryptionKey: string;
   private readonly secretsCapEnforcement: string | undefined;
+  private readonly bedrock: BedrockSandboxConfig | null;
   private readonly log: Logger;
 
   constructor(deps: UserEnvResolverDeps) {
@@ -78,17 +86,27 @@ export class UserEnvResolver {
     this.durableObjectId = deps.durableObjectId;
     this.repoSecretsEncryptionKey = deps.repoSecretsEncryptionKey;
     this.secretsCapEnforcement = deps.secretsCapEnforcement;
+    this.bedrock = deps.bedrock;
     this.log = deps.log;
   }
 
   /**
-   * The user-defined environment for the sandbox, or undefined when the
-   * session is missing or the assembled environment is empty.
+   * The user-defined environment for a sandbox launch, or undefined when the
+   * session is missing or the assembled environment is empty. Called once per
+   * create and per snapshot restore, so each launch gets its own Bedrock key.
    */
   async getUserEnvVars(): Promise<Record<string, string> | undefined> {
     const context = await this.loadUserEnvContext();
     if (!context) return undefined;
-    return Object.keys(context.sandboxEnv).length === 0 ? undefined : context.sandboxEnv;
+    const bedrockEnv = await claudeBedrockEnv(this.bedrock, context);
+    if (Object.keys(bedrockEnv).length > 0) {
+      this.log.info("Bedrock key minted for sandbox", {
+        event: "sandbox.bedrock_key_minted",
+        region: bedrockEnv.AWS_REGION,
+      });
+    }
+    const env = { ...context.sandboxEnv, ...bedrockEnv };
+    return Object.keys(env).length === 0 ? undefined : env;
   }
 
   /**
@@ -224,7 +242,7 @@ export class UserEnvResolver {
       brokerSecrets: managedSecrets,
       providerAuthModes,
     });
-    return { sandboxEnv, providerAuthModes, providerAccountIds };
+    return { harness: session.harness, sandboxEnv, providerAuthModes, providerAccountIds };
   }
 
   /**

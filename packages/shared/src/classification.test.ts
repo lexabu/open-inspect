@@ -11,6 +11,7 @@ import {
   resolveClassificationTarget,
   type OpenAIChatTarget,
 } from "./classification";
+import { mintBedrockApiKey } from "./bedrock-api-key";
 import { z } from "zod";
 import modelIdFixtures from "../test-fixtures/classification-model-ids.json";
 
@@ -60,8 +61,8 @@ describe("resolveClassificationTarget", () => {
     BEDROCK_API_KEY: "bedrock-key",
   };
 
-  it("targets the Anthropic API with the Anthropic key by default", () => {
-    expect(resolveClassificationTarget(KEYS)).toEqual({
+  it("targets the Anthropic API with the Anthropic key by default", async () => {
+    await expect(resolveClassificationTarget(KEYS)).resolves.toEqual({
       protocol: "anthropic-messages",
       provider: "anthropic",
       baseUrl: "https://api.anthropic.com",
@@ -70,13 +71,13 @@ describe("resolveClassificationTarget", () => {
     });
   });
 
-  it("targets Claude in Amazon Bedrock in the model's region with the Bedrock key", () => {
-    expect(
+  it("targets Claude in Amazon Bedrock in the model's region with the Bedrock key", async () => {
+    await expect(
       resolveClassificationTarget({
         ...KEYS,
         CLASSIFICATION_MODEL: "bedrock/eu-west-1/eu.anthropic.claude-haiku-4-5-20251001-v1:0",
       })
-    ).toEqual({
+    ).resolves.toEqual({
       protocol: "anthropic-messages",
       provider: "bedrock",
       baseUrl: "https://bedrock-runtime.eu-west-1.amazonaws.com/anthropic",
@@ -85,10 +86,10 @@ describe("resolveClassificationTarget", () => {
     });
   });
 
-  it("targets OpenAI chat completions with the OpenAI key", () => {
-    expect(
+  it("targets OpenAI chat completions with the OpenAI key", async () => {
+    await expect(
       resolveClassificationTarget({ ...KEYS, CLASSIFICATION_MODEL: "openai/gpt-5.4-mini" })
-    ).toEqual({
+    ).resolves.toEqual({
       protocol: "openai-chat",
       provider: "openai",
       apiKey: "openai-key",
@@ -103,27 +104,57 @@ describe("resolveClassificationTarget", () => {
       model: "bedrock/us-east-1/us.anthropic.claude-haiku-4-5-20251001-v1:0",
       binding: "BEDROCK_API_KEY",
     },
-  ])("throws naming $binding when $model is selected without it", ({ model, binding }) => {
+  ])("throws naming $binding when $model is selected without it", async ({ model, binding }) => {
     const env = { ...KEYS, CLASSIFICATION_MODEL: model, [binding]: undefined };
 
-    expect(() => resolveClassificationTarget(env)).toThrow(
-      `Classification model "${model}" requires ${binding} to be set`
+    await expect(resolveClassificationTarget(env)).rejects.toThrow(
+      `Classification model "${model}" requires ${binding}`
     );
   });
 
-  it("does not serve a Bedrock model with the Anthropic key", () => {
-    expect(() =>
+  it("does not serve a Bedrock model with the Anthropic key", async () => {
+    await expect(
       resolveClassificationTarget({
         CLASSIFICATION_MODEL: "bedrock/us-east-1/us.anthropic.claude-haiku-4-5-20251001-v1:0",
         ANTHROPIC_API_KEY: "anthropic-key",
       })
-    ).toThrow(/requires BEDROCK_API_KEY/);
+    ).rejects.toThrow(/requires BEDROCK_API_KEY/);
   });
 
-  it("throws on an unrecognized model rather than defaulting to Anthropic", () => {
-    expect(() =>
+  it("mints a short-term Bedrock key in the model's region from the IAM access key", async () => {
+    vi.useFakeTimers({ now: new Date("2026-11-17T12:34:56Z") });
+    try {
+      const key = { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret" };
+      const target = await resolveClassificationTarget({
+        CLASSIFICATION_MODEL: "bedrock/eu-west-1/eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+        BEDROCK_AWS_ACCESS_KEY_ID: key.accessKeyId,
+        BEDROCK_AWS_SECRET_ACCESS_KEY: key.secretAccessKey,
+      });
+      expect(target).toMatchObject({
+        provider: "bedrock",
+        baseUrl: "https://bedrock-runtime.eu-west-1.amazonaws.com/anthropic",
+        apiKey: await mintBedrockApiKey(key, "eu-west-1", new Date("2026-11-17T12:34:56Z")),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("prefers a long-term Bedrock key over minting", async () => {
+    await expect(
+      resolveClassificationTarget({
+        ...KEYS,
+        CLASSIFICATION_MODEL: "bedrock/us-east-1/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        BEDROCK_AWS_ACCESS_KEY_ID: "AKIDEXAMPLE",
+        BEDROCK_AWS_SECRET_ACCESS_KEY: "secret",
+      })
+    ).resolves.toMatchObject({ apiKey: "bedrock-key" });
+  });
+
+  it("throws on an unrecognized model rather than defaulting to Anthropic", async () => {
+    await expect(
       resolveClassificationTarget({ ...KEYS, CLASSIFICATION_MODEL: "mistral/mistral-large" })
-    ).toThrow(/Unrecognized classification model/);
+    ).rejects.toThrow(/Unrecognized classification model/);
   });
 });
 

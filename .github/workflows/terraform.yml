@@ -235,6 +235,9 @@ jobs:
           TF_VAR_classification_anthropic_api_key: ${{ secrets.CLASSIFICATION_ANTHROPIC_API_KEY }}
           TF_VAR_classification_openai_api_key: ${{ secrets.CLASSIFICATION_OPENAI_API_KEY }}
           TF_VAR_classification_bedrock_api_key: ${{ secrets.CLASSIFICATION_BEDROCK_API_KEY }}
+          TF_VAR_bedrock_aws_access_key_id: ${{ secrets.BEDROCK_AWS_ACCESS_KEY_ID }}
+          TF_VAR_bedrock_aws_secret_access_key: ${{ secrets.BEDROCK_AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_bedrock_aws_region: "${{ vars.BEDROCK_AWS_REGION }}"
           TF_VAR_classification_model: "${{ vars.CLASSIFICATION_MODEL || 'claude-haiku-4-5' }}"
           TF_VAR_classification_reasoning_effort: "${{ vars.CLASSIFICATION_REASONING_EFFORT }}"
           TF_VAR_token_encryption_key: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
@@ -520,6 +523,9 @@ jobs:
           TF_VAR_classification_anthropic_api_key: ${{ secrets.CLASSIFICATION_ANTHROPIC_API_KEY }}
           TF_VAR_classification_openai_api_key: ${{ secrets.CLASSIFICATION_OPENAI_API_KEY }}
           TF_VAR_classification_bedrock_api_key: ${{ secrets.CLASSIFICATION_BEDROCK_API_KEY }}
+          TF_VAR_bedrock_aws_access_key_id: ${{ secrets.BEDROCK_AWS_ACCESS_KEY_ID }}
+          TF_VAR_bedrock_aws_secret_access_key: ${{ secrets.BEDROCK_AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_bedrock_aws_region: "${{ vars.BEDROCK_AWS_REGION }}"
           TF_VAR_classification_model: "${{ vars.CLASSIFICATION_MODEL || 'claude-haiku-4-5' }}"
           TF_VAR_classification_reasoning_effort: "${{ vars.CLASSIFICATION_REASONING_EFFORT }}"
           TF_VAR_token_encryption_key: ${{ secrets.TOKEN_ENCRYPTION_KEY }}

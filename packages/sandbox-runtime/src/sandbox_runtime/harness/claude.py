@@ -268,8 +268,9 @@ class ClaudeHarness:
         credential = resolve_api_key_credential(self.environ)
         if credential is None:
             raise HarnessStartError(
-                "No Anthropic credential is available to this session: set ANTHROPIC_API_KEY "
-                "or select a connected Claude account, then start a new session."
+                "No Anthropic credential is available to this session: set ANTHROPIC_API_KEY, "
+                "configure Amazon Bedrock for the deployment, or select a connected Claude "
+                "account, then start a new session."
             )
         return credential
 
