@@ -447,6 +447,40 @@ describe("GitHubIntegrationSettings", () => {
     );
   });
 
+  it("keeps API-set reviewers when saving unrelated global and repo settings", async () => {
+    const user = userEvent.setup();
+    const reviewers = [
+      { model: "amazon-bedrock/openai.gpt-6.2-sol", harness: "opencode" as const },
+      { model: "anthropic/claude-opus-4-5", harness: "claude" as const },
+    ];
+    setupSWR({
+      global: { defaults: { autoReviewOnOpen: true, reviewers } },
+      repos: [{ repo: "acme/web", settings: { reviewers: reviewers.slice(0, 1) } }],
+      availableRepos: [repo("acme/web")],
+    });
+    fetchMock.mockResolvedValue(okJson({}));
+
+    render(<GitHubIntegrationSettings />);
+
+    await user.click(screen.getByRole("switch", { name: /auto-review new prs/i }));
+    await user.click(screen.getAllByRole("button", { name: /^save$/i })[0]);
+    const row = repoOverrideRow("acme/web");
+    await selectAutoReviewMode(row, /override for this repo/i);
+    await user.click(within(row).getByRole("button", { name: /^save$/i }));
+
+    const bodies = fetchMock.mock.calls
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === "PUT")
+      .map(([url, init]) => [url, JSON.parse(String((init as RequestInit).body)).settings]);
+    expect(bodies).toContainEqual([
+      "/api/integration-settings/github",
+      expect.objectContaining({ defaults: expect.objectContaining({ reviewers }) }),
+    ]);
+    expect(bodies).toContainEqual([
+      "/api/integration-settings/github/repos/acme/web",
+      expect.objectContaining({ reviewers: reviewers.slice(0, 1) }),
+    ]);
+  });
+
   it("clears global model defaults without resetting unrelated settings", async () => {
     const user = userEvent.setup();
     setupSWR({

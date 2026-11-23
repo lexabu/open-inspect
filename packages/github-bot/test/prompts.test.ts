@@ -14,6 +14,22 @@ describe("buildCodeReviewPrompt", () => {
     isPublic: true,
   };
 
+  it("names the reviewer and only comments when it is one of several reviewers", () => {
+    const prompt = buildCodeReviewPrompt({
+      ...baseParams,
+      reviewer: { modelName: "GPT-6.2 Sol (Bedrock)", reviewerCount: 2 },
+    });
+    expect(prompt).toContain("**Reviewer: GPT-6.2 Sol (Bedrock)**");
+    expect(prompt).toContain('"event": "COMMENT"');
+    expect(prompt).not.toContain("<APPROVE, REQUEST_CHANGES, or COMMENT>");
+  });
+
+  it("lets a single reviewer approve or request changes", () => {
+    const prompt = buildCodeReviewPrompt(baseParams);
+    expect(prompt).toContain("<APPROVE, REQUEST_CHANGES, or COMMENT>");
+    expect(prompt).not.toContain("**Reviewer:");
+  });
+
   it("includes all fields in the prompt", () => {
     const prompt = buildCodeReviewPrompt(baseParams);
     expect(prompt).toContain("Pull Request #42");

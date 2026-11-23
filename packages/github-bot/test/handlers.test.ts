@@ -957,6 +957,17 @@ describe("multi-model reviews", () => {
       .map(([, init]) => JSON.parse((init as { body: string }).body));
   }
 
+  /** Fail session creation for one model; launch order is not deterministic. */
+  function failSessionsFor(env: Env, failingModel: string) {
+    const cpFetch = getControlPlaneFetch(env);
+    const original = cpFetch.getMockImplementation()!;
+    cpFetch.mockImplementation((url: string, init: RequestInit) =>
+      url === "https://internal/sessions" && JSON.parse(String(init.body)).model === failingModel
+        ? Promise.resolve(new Response("boom", { status: 500 }))
+        : original(url, init)
+    );
+  }
+
   function promptBodies(env: Env): string[] {
     return getControlPlaneFetch(env)
       .mock.calls.filter(([url]) => String(url).endsWith("/prompt"))
@@ -987,19 +998,23 @@ describe("multi-model reviews", () => {
         expect.objectContaining({ model: "amazon-bedrock/openai.gpt-6.2-sol" }),
       ],
     });
-    expect(sessionCreateBodies(env)).toEqual([
-      expect.objectContaining({
-        model: "anthropic/claude-opus-4-5",
-        harness: "claude",
-        title: expect.stringContaining("(Claude Opus 4.5)"),
-      }),
-      expect.objectContaining({
-        model: "amazon-bedrock/openai.gpt-6.2-sol",
-        harness: "opencode",
-        reasoningEffort: "high",
-        title: expect.stringContaining("(GPT-6.2 Sol (Bedrock))"),
-      }),
-    ]);
+    // Reviewers launch in parallel, so control-plane calls arrive in either order.
+    expect(sessionCreateBodies(env)).toHaveLength(2);
+    expect(sessionCreateBodies(env)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          model: "anthropic/claude-opus-4-5",
+          harness: "claude",
+          title: expect.stringContaining("(Claude Opus 4.5)"),
+        }),
+        expect.objectContaining({
+          model: "amazon-bedrock/openai.gpt-6.2-sol",
+          harness: "opencode",
+          reasoningEffort: "high",
+          title: expect.stringContaining("(GPT-6.2 Sol (Bedrock))"),
+        }),
+      ])
+    );
     const prompts = promptBodies(env);
     expect(prompts).toHaveLength(2);
     expect(prompts.some((prompt) => prompt.includes("**Reviewer: Claude Opus 4.5**"))).toBe(true);
@@ -1024,12 +1039,7 @@ describe("multi-model reviews", () => {
   it("says on the PR which reviewer failed when the others started", async () => {
     vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, reviewers });
     const env = createMockEnv();
-    mockControlPlaneResponse(env, /^https:\/\/internal\/sessions$/, () => {
-      const created = sessionCreateBodies(env).length;
-      return created === 1
-        ? Response.json({ sessionId: "session-123", status: "created" })
-        : new Response("boom", { status: 500 });
-    });
+    failSessionsFor(env, "amazon-bedrock/openai.gpt-6.2-sol");
     const githubFetch = vi.fn().mockResolvedValue(new Response("", { status: 201 }));
     vi.stubGlobal("fetch", githubFetch);
     const log = createMockLogger();
@@ -1047,6 +1057,22 @@ describe("multi-model reviews", () => {
     const comment = JSON.parse(githubFetch.mock.calls[0][1].body).body;
     expect(comment).toContain("`GPT-6.2 Sol (Bedrock)`");
     expect(comment).toContain("1 of 2 reviews");
+  });
+
+  it("still reports success when the reviewer-failure notice cannot be posted", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, reviewers });
+    const env = createMockEnv();
+    failSessionsFor(env, "amazon-bedrock/openai.gpt-6.2-sol");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 500 })));
+    const log = createMockLogger();
+
+    const result = await handleReviewRequested(env, log, reviewRequestedPayload, "trace-notice");
+
+    expect(result).toMatchObject({ outcome: "processed", sessions: [expect.anything()] });
+    expect(log.error).toHaveBeenCalledWith(
+      "session.reviewer_failure_notice_failed",
+      expect.objectContaining({ failed_models: ["amazon-bedrock/openai.gpt-6.2-sol"] })
+    );
   });
 
   it("throws when every reviewer fails to start", async () => {

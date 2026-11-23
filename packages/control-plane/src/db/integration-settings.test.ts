@@ -514,6 +514,18 @@ describe("IntegrationSettingsStore", () => {
       expect(result?.codeReviewInstructions).toBe("Focus on security.");
     });
 
+    it("stores reviewer models under their canonical IDs", async () => {
+      await store.setRepoSettings("github", "acme/widgets", {
+        reviewers: [{ model: "claude-opus-4-5", harness: "claude" }],
+        allowedTriggerUsers: ["alice"],
+      });
+
+      const settings = await store.getRepoSettings("github", "acme/widgets");
+      expect(settings?.reviewers).toEqual([
+        { model: "anthropic/claude-opus-4-5", harness: "claude" },
+      ]);
+    });
+
     it("stores reviewers on different providers and resolves them", async () => {
       const reviewers = [
         { model: "anthropic/claude-opus-4-5", harness: "claude" as const },
@@ -550,6 +562,14 @@ describe("IntegrationSettingsStore", () => {
           },
         ],
         error: IntegrationSettingsValidationError,
+      },
+      {
+        label: "the same model twice under two spellings",
+        reviewers: [
+          { model: "claude-opus-4-5", harness: "claude" as const },
+          { model: "anthropic/claude-opus-4-5", harness: "claude" as const },
+        ],
+        error: "listed more than once",
       },
       {
         label: "the same model twice",

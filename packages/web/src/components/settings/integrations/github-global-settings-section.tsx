@@ -180,6 +180,8 @@ export function GlobalSettingsSection({
         ...(codeReviewInstructions ? { codeReviewInstructions } : {}),
         ...(commentActionInstructions ? { commentActionInstructions } : {}),
         ...(settings?.defaults?.autofix !== undefined || autofixTouched ? { autofix } : {}),
+        // The form does not edit reviewers yet; keep any list set through the API.
+        ...(settings?.defaults?.reviewers ? { reviewers: settings.defaults.reviewers } : {}),
       },
     };
 
