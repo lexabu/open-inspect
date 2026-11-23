@@ -8,16 +8,15 @@ import type {
 import type { Logger } from "./logger";
 import { buildCodeReviewPrompt, buildCommentActionPrompt } from "./prompts";
 import { requestedReviewerPayloadSchema } from "./payload-schemas";
-import { containsBotMention, stripBotMention } from "@open-inspect/shared/github-mention";
+import {
+  containsBotMention,
+  isBotLogin,
+  stripBotMention,
+} from "@open-inspect/shared/github-mention";
 import { parseInlinePromptFlags } from "@open-inspect/shared/inline-prompt-flags";
 import { startSession, type HandlerResult } from "./session-startup";
 
 export type { HandlerResult } from "./session-startup";
-
-/** GitHub logins are case-insensitive. */
-function isBotLogin(login: string | undefined, botUsername: string): boolean {
-  return login?.toLowerCase() === botUsername.toLowerCase();
-}
 
 /** GitHub rejects APPROVE and REQUEST_CHANGES reviews from a PR's author, including the App. */
 function isAuthoredByBot(pr: { user: { login: string } }, env: Env): boolean {

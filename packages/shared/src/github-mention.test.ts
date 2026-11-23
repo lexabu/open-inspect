@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containsBotMention, stripBotMention } from "./github-mention";
+import { containsBotMention, isBotLogin, stripBotMention } from "./github-mention";
 
 const BOT = "nativepath-ai[bot]";
 
@@ -38,6 +38,11 @@ describe("containsBotMention", () => {
     expect(containsBotMention("@nativepath-ai review", undefined)).toBe(false);
   });
 
+  it("matches nothing when the configured login has no handle", () => {
+    expect(containsBotMention("@anyone review", "[bot]")).toBe(false);
+    expect(stripBotMention("@anyone review", "[bot]")).toBe("@anyone review");
+  });
+
   it("also accepts a configured login without the [bot] suffix", () => {
     expect(containsBotMention("@nativepath-ai[bot] hi", "nativepath-ai")).toBe(true);
   });
@@ -62,5 +67,23 @@ describe("stripBotMention", () => {
         BOT
       )
     ).toBe("why does `@nativepath-ai` fail for me@nativepath-ai.com and @nativepath-ai/reviewers?");
+  });
+});
+
+describe("isBotLogin", () => {
+  it.each([BOT, "nativepath-ai"])("recognizes the App's login when configured as %s", (config) => {
+    expect(isBotLogin("nativepath-ai[bot]", config)).toBe(true);
+    expect(isBotLogin("NativePath-AI[bot]", config)).toBe(true);
+  });
+
+  it("never treats a person named like the handle as the bot", () => {
+    expect(isBotLogin("nativepath-ai", BOT)).toBe(false);
+    expect(isBotLogin("nativepath-ai", "nativepath-ai")).toBe(false);
+  });
+
+  it("rejects other logins, missing logins and an empty configuration", () => {
+    expect(isBotLogin("other[bot]", BOT)).toBe(false);
+    expect(isBotLogin(undefined, BOT)).toBe(false);
+    expect(isBotLogin("[bot]", "[bot]")).toBe(false);
   });
 });

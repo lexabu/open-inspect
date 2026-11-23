@@ -15,7 +15,7 @@ import type {
 import { SourceControlProviderError } from "../source-control/errors";
 import type { CredentialScope } from "../source-control";
 import { SessionInternalPaths, type SessionInternalPath } from "../session/contracts";
-import { containsBotMention } from "@open-inspect/shared/github-mention";
+import { containsBotMention, isBotLogin } from "@open-inspect/shared/github-mention";
 
 interface FeedbackReceipt {
   feedbackKey: string;
@@ -454,7 +454,7 @@ export class AutofixService {
   ): Promise<string | null> {
     const authorType = feedback.author.type.toLowerCase();
     const authorLogin = feedback.author.login.toLowerCase();
-    if (authorType === "bot" && authorLogin === this.botUsername.toLowerCase()) {
+    if (authorType === "bot" && isBotLogin(authorLogin, this.botUsername)) {
       if (feedback.kind !== "review") return "bot_pr_comment";
       if (!settings.openInspectReviewsEnabled) return "own_reviews_disabled";
       if (

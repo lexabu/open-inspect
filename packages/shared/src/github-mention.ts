@@ -11,8 +11,25 @@ import { escapeRegExp } from "./regex";
  * The full login may sit next to Markdown punctuation such as a footnote
  * (`@my-app[bot][^1]`).
  */
-function botMentionPattern(botUsername: string, flags: string): RegExp {
-  const handle = escapeRegExp(botUsername.replace(/\[bot\]$/i, ""));
+/** The App's handle (`my-app`) from a configured login, with or without `[bot]`. */
+function botHandle(botUsername: string): string {
+  return botUsername.trim().replace(/\[bot\]$/i, "");
+}
+
+/**
+ * Whether a GitHub login is the bot's. A configured login with or without the
+ * `[bot]` suffix means the same App, whose login GitHub always reports with it,
+ * so a person whose username equals the App's handle never counts as the bot.
+ */
+export function isBotLogin(login: string | null | undefined, botUsername: string): boolean {
+  const handle = botHandle(botUsername);
+  return Boolean(handle) && login?.toLowerCase() === `${handle}[bot]`.toLowerCase();
+}
+
+function botMentionPattern(botUsername: string, flags: string): RegExp | null {
+  const raw = botHandle(botUsername);
+  if (!raw) return null;
+  const handle = escapeRegExp(raw);
   const notInsideAWord = "(?<![A-Za-z0-9._%+/-])";
   return new RegExp(
     `${notInsideAWord}@${handle}(?:\\[bot\\](?![A-Za-z0-9-])|(?![A-Za-z0-9\\[/@-]|\\.[A-Za-z0-9]))`,
@@ -29,14 +46,15 @@ function segments(body: string): string[] {
 }
 
 export function containsBotMention(body: string, botUsername: string | undefined): boolean {
-  if (!botUsername) return false;
-  const pattern = botMentionPattern(botUsername, "i");
+  const pattern = botUsername ? botMentionPattern(botUsername, "i") : null;
+  if (!pattern) return false;
   return segments(body).some((part, index) => index % 2 === 0 && pattern.test(part));
 }
 
 /** Remove the bot's mentions from prose; code is left exactly as written. */
 export function stripBotMention(body: string, botUsername: string): string {
   const pattern = botMentionPattern(botUsername, "gi");
+  if (!pattern) return body.trim();
   return segments(body)
     .map((part, index) => (index % 2 === 0 ? part.replace(pattern, "") : part))
     .join("")
