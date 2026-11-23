@@ -18,6 +18,10 @@ describe("containsBotMention", () => {
     "````\n```\n@nativepath-ai in code\n````\n@nativepath-ai after the block",
     "a stray ` here\n\n@nativepath-ai please look\n\nanother ` there",
     "| a ` | b |\n| --- | --- |\n| @nativepath-ai | c ` |",
+    "Can you check...@nativepath-ai[bot]",
+    "确认一下@nativepath-ai[bot]",
+    "<details>\n<summary>log</summary>\n\nlong log\n</details>\n@nativepath-ai[bot] please look",
+    "<details><summary>log</summary>x</details> @nativepath-ai why?",
   ])("matches %s", (body) => {
     expect(containsBotMention(body, BOT)).toBe(true);
   });
@@ -153,6 +157,20 @@ describe("worst-case input", () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
+  it("keeps a mention after a quoted fence in a very long body", () => {
+    const log = "> log line\n".repeat(2_000);
+    const body = `> \`\`\`\n${log}> \`\`\`\n\n@nativepath-ai what broke?`;
+    expect(body.length).toBeGreaterThan(10_000);
+    expect(containsBotMention(body, BOT)).toBe(true);
+  });
+
+  it("does not close a top-level log fence on a quoted fence line in a very long body", () => {
+    const log = "log line\n".repeat(2_000);
+    const body = `\`\`\`\n${log}> \`\`\`\n@nativepath-ai in the log\n\`\`\`\n`;
+    expect(body.length).toBeGreaterThan(10_000);
+    expect(containsBotMention(body, BOT)).toBe(false);
+  });
+
   it("keeps a mention after a fenced log inside a list item in a very long body", () => {
     const log = "    log line\n".repeat(2_000);
     const body = `- deploy failed:\n  \`\`\`\n${log}  \`\`\`\n\n@nativepath-ai what broke?`;
@@ -161,8 +179,9 @@ describe("worst-case input", () => {
     expect(containsBotMention(body.replace("@nativepath-ai what broke?", "done"), BOT)).toBe(false);
   });
 
-  it("parses a bracket-heavy comment below the parse cutoff in bounded time", () => {
-    const body = `${"[".repeat(9_000)}${"]".repeat(9_000)} @nativepath-ai`;
+  it("parses a bracket-heavy comment just below the parse cutoff in bounded time", () => {
+    const body = `${"[".repeat(4_990)}${"]".repeat(4_990)} @nativepath-ai`;
+    expect(body.length).toBeLessThan(10_000);
     const started = performance.now();
     expect(containsBotMention(body, BOT)).toBe(true);
     expect(performance.now() - started).toBeLessThan(2000);

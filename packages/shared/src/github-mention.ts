@@ -8,7 +8,7 @@ import { escapeRegExp } from "./regex";
  * `my-app[bot]`. People type the App's handle without the suffix (GitHub does
  * not autocomplete Apps), so `@my-app` and `@my-app[bot]` both count.
  *
- * Not a mention: text inside code, raw HTML or an inline `<code>` element, an email
+ * Not a mention: text inside code, an HTML tag or comment, or a `<code>` element, an email
  * address in any script (`me@my-app.com`), a team handle (`@my-app/team`), or a
  * longer handle that only starts with the App's name (`@my-app-other`,
  * `@my-app[bot]-clone`), including one split by an invisible format character.
@@ -37,29 +37,29 @@ function botMentionPattern(botUsername: string, flags: string): RegExp | null {
   const raw = botHandle(botUsername);
   if (!raw) return null;
   const handle = escapeRegExp(raw);
-  // Not after an email's local part or a path.
+  // The full login keeps the boundaries it always had: anything but a longer handle.
+  const full = String.raw`@${handle}\[bot\](?![A-Za-z0-9-])`;
+  // The plain handle is stricter: not after an email's local part or a path, and not
+  // the start of `[bot]...`, a longer handle, a team, an email or a domain.
   const before = String.raw`(?<![${WORD}.%+/-])`;
-  // Not glued to a longer handle.
-  const afterFull = String.raw`(?![${WORD}-])`;
-  // The plain handle must also not start `[bot]...`, a team, an email or a domain.
   const afterPlain = String.raw`(?![${WORD}/@-]|\[(?!\^)|\.[${WORD}])`;
-  return new RegExp(`${before}@${handle}(?:\\[bot\\]${afterFull}|${afterPlain})`, `${flags}u`);
+  return new RegExp(`${full}|${before}@${handle}${afterPlain}`, `${flags}u`);
 }
 
-/** Node types whose text is not prose: code blocks, inline code and raw HTML. */
-const NON_PROSE = new Set(["code", "inlineCode", "html"]);
+/** Node types whose text is never prose: code blocks and inline code. */
+const CODE_NODES = new Set(["code", "inlineCode"]);
 
 /** Inline HTML elements whose contents render as code, read from a tag's start. */
 const HTML_CODE_OPEN = /^<(code|pre|kbd|samp|tt)(?=[\s/>])/i;
 const HTML_CODE_CLOSE = /^<\/(code|pre|kbd|samp|tt)\s*>/i;
 
 /**
- * Bodies longer than this skip the Markdown parser: parse time grows
- * quadratically with quote nesting (2.7 s at GitHub's 65,536-character cap).
- * They get a linear scan for top-level fenced blocks instead, which covers
- * pasted logs.
+ * Bodies longer than this skip the Markdown parser, whose cost grows faster than
+ * the input on adversarial shapes (deep quotes, bracket runs: about 20 ms at this
+ * size, 2.7 s at GitHub's 65,536-character cap). They get a linear scan for
+ * top-level fenced blocks instead, which covers pasted logs.
  */
-const MAX_PARSED_LENGTH = 20_000;
+const MAX_PARSED_LENGTH = 10_000;
 
 interface MarkdownNode {
   type: string;
@@ -87,9 +87,17 @@ function parsedCodeRanges(body: string): Array<[number, number]> {
     const node = stack.pop()!;
     const start = node.position?.start.offset;
     const end = node.position?.end.offset;
-    if (NON_PROSE.has(node.type) && start !== undefined && end !== undefined) {
+    if (start !== undefined && end !== undefined && CODE_NODES.has(node.type)) {
       ranges.push([start, end]);
-      if (node.type === "html") trackHtmlCode(node.value ?? "", start, end, openHtml, ranges);
+      continue;
+    }
+    if (start !== undefined && end !== undefined && node.type === "html") {
+      // Only the markup is masked: text between tags (after `</details>`, say) is
+      // visible prose. Tags are read from the source, which keeps container markers.
+      for (const [tagStart, tagEnd] of htmlTags(body, start, end)) {
+        ranges.push([tagStart, tagEnd]);
+        trackHtmlCode(body.slice(tagStart, tagEnd), tagStart, tagEnd, openHtml, ranges);
+      }
       continue;
     }
     for (let i = (node.children?.length ?? 0) - 1; i >= 0; i--) stack.push(node.children![i]);
@@ -97,7 +105,42 @@ function parsedCodeRanges(body: string): Array<[number, number]> {
   return ranges;
 }
 
-/** Masks inline code elements from their outermost opening tag to its closing tag. */
+/**
+ * HTML comments and tags in `body[start, end)`, by a linear scan that respects
+ * quoted attribute values. An unterminated comment or tag runs to `end`.
+ */
+function htmlTags(body: string, start: number, end: number): Array<[number, number]> {
+  const tags: Array<[number, number]> = [];
+  let i = start;
+  while (i < end) {
+    const lt = body.indexOf("<", i);
+    if (lt < 0 || lt >= end) break;
+    if (body.startsWith("<!--", lt)) {
+      const close = body.indexOf("-->", lt + 4);
+      const tagEnd = close < 0 || close + 3 > end ? end : close + 3;
+      tags.push([lt, tagEnd]);
+      i = tagEnd;
+      continue;
+    }
+    if (!/[A-Za-z/!?]/.test(body[lt + 1] ?? "")) {
+      i = lt + 1;
+      continue;
+    }
+    let j = lt + 1;
+    let quote: string | null = null;
+    while (j < end && (quote !== null || body[j] !== ">")) {
+      if (quote !== null && body[j] === quote) quote = null;
+      else if (quote === null && (body[j] === '"' || body[j] === "'")) quote = body[j];
+      j++;
+    }
+    const tagEnd = Math.min(j + 1, end);
+    tags.push([lt, tagEnd]);
+    i = tagEnd;
+  }
+  return tags;
+}
+
+/** Masks code elements from their outermost opening tag to its closing tag. */
 function trackHtmlCode(
   tag: string,
   start: number,
@@ -123,44 +166,20 @@ function trackHtmlCode(
   }
 }
 
-/**
- * A line without its leading list-item and block-quote markers (any mix of `>`,
- * bullets and ordered-list numbers), for the fallback scan. A plain loop rather
- * than a regex, so long runs of markers cannot backtrack.
- */
-function withoutContainers(line: string): string {
-  let i = 0;
-  for (;;) {
-    let j = i;
-    while (line[j] === " " || line[j] === "\t") j++;
-    let next = -1;
-    if (line[j] === ">") next = j + 1;
-    else if ("-*+".includes(line[j] ?? "x") && /^[ \t]?$/.test(line[j + 1] ?? "")) next = j + 1;
-    else {
-      let k = j;
-      while (k < j + 9 && line[k] >= "0" && line[k] <= "9") k++;
-      if (k > j && (line[k] === "." || line[k] === ")") && /^[ \t]?$/.test(line[k + 1] ?? "")) {
-        next = k + 1;
-      }
-    }
-    if (next < 0) return line.slice(j);
-    i = line[next] === " " || line[next] === "\t" ? next + 1 : next;
-  }
-}
-
-const FENCE = /^(`{3,}|~{3,})(.*)$/s;
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/s;
 
 /**
- * Fenced blocks by a linear line scan, for bodies too long to parse. Fences may
- * sit inside list items or quotes; a closing fence uses the same character, at
- * least as many, and nothing else on its line.
+ * Top-level fenced blocks by a linear line scan, for bodies too long to parse:
+ * a fence opens at the start of a line (up to three spaces in) and closes with
+ * the same character, at least as many, and nothing else on its line. Fences
+ * inside quotes are left as prose, so a mention after one is never hidden.
  */
 function fencedRanges(body: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
   let offset = 0;
   let fence: { char: string; length: number; start: number } | null = null;
   for (const line of body.split(/(?<=\n)/)) {
-    const marker = FENCE.exec(withoutContainers(line.replace(/\r?\n$/, "")));
+    const marker = FENCE.exec(line.replace(/\r?\n$/, ""));
     if (fence) {
       if (
         marker &&
