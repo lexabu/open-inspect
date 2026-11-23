@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containsBotMention, stripBotMention } from "../src/github-mention";
+import { containsBotMention, stripBotMention } from "./github-mention";
 
 const BOT = "nativepath-ai[bot]";
 
@@ -9,6 +9,9 @@ describe("containsBotMention", () => {
     "@nativepath-ai review this",
     "thanks @NativePath-AI, one more question",
     "(@nativepath-ai)",
+    "ping @nativepath-ai.",
+    "see @nativepath-ai[bot][^1]",
+    "first line\n@nativepath-ai please look",
   ])("matches %s", (body) => {
     expect(containsBotMention(body, BOT)).toBe(true);
   });
@@ -18,9 +21,17 @@ describe("containsBotMention", () => {
     "ask @nativepath-ai[bot]-clone instead",
     "@nativepath-aibot review this",
     "nativepath-ai review this",
-    "email nativepath-ai@example.com",
+    "email me@nativepath-ai.com about it",
+    "write to @nativepath-ai.com",
+    "cc @nativepath-ai/reviewers",
+    "the handle is `@nativepath-ai`",
+    "```\n@nativepath-ai review\n```",
   ])("does not match %s", (body) => {
     expect(containsBotMention(body, BOT)).toBe(false);
+  });
+
+  it("matches a prose mention next to code", () => {
+    expect(containsBotMention("`npm test` fails, @nativepath-ai why?", BOT)).toBe(true);
   });
 
   it("matches nothing without a configured bot", () => {
@@ -38,9 +49,18 @@ describe("stripBotMention", () => {
     expect(stripBotMention("@nativepath-ai[bot] please explain", BOT)).toBe("please explain");
   });
 
-  it("removes every mention of the bot", () => {
+  it("removes every prose mention of the bot", () => {
     expect(stripBotMention("@nativepath-ai fix this, then @nativepath-ai[bot] rerun", BOT)).toBe(
       "fix this, then  rerun"
     );
+  });
+
+  it("leaves code, emails and team handles as written", () => {
+    expect(
+      stripBotMention(
+        "@nativepath-ai why does `@nativepath-ai` fail for me@nativepath-ai.com and @nativepath-ai/reviewers?",
+        BOT
+      )
+    ).toBe("why does `@nativepath-ai` fail for me@nativepath-ai.com and @nativepath-ai/reviewers?");
   });
 });

@@ -66,6 +66,10 @@
       "import": "./dist/inline-prompt-flags.js",
       "types": "./dist/inline-prompt-flags.d.ts"
     },
+    "./github-mention": {
+      "import": "./dist/github-mention.js",
+      "types": "./dist/github-mention.d.ts"
+    },
     "./regex": {
       "import": "./dist/regex.js",
       "types": "./dist/regex.d.ts"

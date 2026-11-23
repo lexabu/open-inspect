@@ -15,6 +15,7 @@ import type {
 import { SourceControlProviderError } from "../source-control/errors";
 import type { CredentialScope } from "../source-control";
 import { SessionInternalPaths, type SessionInternalPath } from "../session/contracts";
+import { containsBotMention } from "@open-inspect/shared/github-mention";
 
 interface FeedbackReceipt {
   feedbackKey: string;
@@ -464,10 +465,7 @@ export class AutofixService {
         return "own_review_replies";
       }
     } else if (authorType === "user") {
-      if (
-        feedback.kind === "pr_comment" &&
-        feedback.body.toLowerCase().includes(`@${this.botUsername.toLowerCase()}`)
-      ) {
+      if (feedback.kind === "pr_comment" && containsBotMention(feedback.body, this.botUsername)) {
         return "explicit_mention";
       }
       const canWrite = await this.github.hasPullRequestWritePermission(

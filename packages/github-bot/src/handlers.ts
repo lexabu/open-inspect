@@ -8,7 +8,7 @@ import type {
 import type { Logger } from "./logger";
 import { buildCodeReviewPrompt, buildCommentActionPrompt } from "./prompts";
 import { requestedReviewerPayloadSchema } from "./payload-schemas";
-import { containsBotMention, stripBotMention } from "./github-mention";
+import { containsBotMention, stripBotMention } from "@open-inspect/shared/github-mention";
 import { parseInlinePromptFlags } from "@open-inspect/shared/inline-prompt-flags";
 import { startSession, type HandlerResult } from "./session-startup";
 
