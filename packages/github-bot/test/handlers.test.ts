@@ -1075,6 +1075,43 @@ describe("multi-model reviews", () => {
     );
   });
 
+  it("posts one refusal comment and skips when every reviewer is refused", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, reviewers });
+    const env = createMockEnv();
+    mockControlPlaneResponse(env, /^https:\/\/internal\/sessions$/, () =>
+      Response.json({ code: "not_member" }, { status: 403 })
+    );
+    const githubFetch = vi.fn().mockResolvedValue(new Response("", { status: 201 }));
+    vi.stubGlobal("fetch", githubFetch);
+
+    const result = await handleReviewRequested(
+      env,
+      createMockLogger(),
+      reviewRequestedPayload,
+      "trace-refused"
+    );
+
+    expect(result).toEqual({ outcome: "skipped", skip_reason: "not_member" });
+    expect(sessionCreateBodies(env)).toHaveLength(2);
+    expect(githubFetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(githubFetch.mock.calls[0][1].body).body).toMatch(/not a member/i);
+  });
+
+  it("logs the orphaned session when its prompt cannot be sent", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, reviewers });
+    const env = createMockEnv();
+    mockControlPlaneResponse(env, /\/prompt$/, () => new Response("down", { status: 500 }));
+    const log = createMockLogger();
+
+    await expect(
+      handleReviewRequested(env, log, reviewRequestedPayload, "trace-prompt")
+    ).rejects.toThrow();
+    expect(log.error).toHaveBeenCalledWith(
+      "session.prompt_failed",
+      expect.objectContaining({ session_id: "session-123" })
+    );
+  });
+
   it("throws when every reviewer fails to start", async () => {
     vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, reviewers });
     const env = createMockEnv();

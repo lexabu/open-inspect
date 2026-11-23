@@ -97,6 +97,30 @@ describe("getGitHubConfig", () => {
     expect(result.reviewers).toEqual(reviewers);
   });
 
+  it("fails closed on an empty reviewer list", async () => {
+    const env = createMockEnv(() =>
+      Promise.resolve(
+        Response.json({
+          config: {
+            model: null,
+            reasoningEffort: null,
+            reviewers: [],
+            autoReviewOnOpen: true,
+            enabledRepos: null,
+            allowedTriggerUsers: null,
+            codeReviewInstructions: null,
+            commentActionInstructions: null,
+          },
+        })
+      )
+    );
+
+    const result = await getGitHubConfig(env, "acme/widgets", createMockLogger());
+
+    expect(result.enabledRepos).toEqual([]);
+    expect(result.reviewers).toBeNull();
+  });
+
   it("parses the harness from a successful response", async () => {
     const env = createMockEnv(() =>
       Promise.resolve(
