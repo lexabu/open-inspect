@@ -86,18 +86,20 @@ To run more than one reviewer, set `reviewers` in the GitHub integration setting
 
 ```json
 {
-  "reviewers": [
-    {
-      "model": "amazon-bedrock/openai.gpt-6.2-sol",
-      "harness": "opencode",
-      "reasoningEffort": "high"
-    },
-    { "model": "anthropic/claude-opus-4-5", "harness": "claude" }
-  ]
+  "settings": {
+    "reviewers": [
+      {
+        "model": "amazon-bedrock/openai.gpt-6.2-sol",
+        "harness": "opencode",
+        "reasoningEffort": "high"
+      },
+      { "model": "anthropic/claude-opus-4-5", "harness": "claude" }
+    ]
+  }
 }
 ```
 
-Send it with `PUT /api/integration-settings/github` (global, under `defaults`) or `PUT /api/integration-settings/github/repos/<owner>/<name>` (one repository). Each reviewer's model must be valid and runnable by its harness, and a model can appear only once. If one reviewer fails to start while others run, the bot says so on the PR. Amazon Bedrock models need the deployment's Bedrock configuration; see [Choosing a model](/models/choosing-a-model).
+Send that body to `PUT /api/integration-settings/github/repos/<owner>/<name>` for one repository. For all repositories, send it to `PUT /api/integration-settings/github` with the list under `settings.defaults.reviewers`. A PUT replaces that level's settings, so include the other settings you want to keep. Each reviewer's model must be valid and runnable by its harness, and a model can appear only once. If one reviewer fails to start while others run, the bot says so on the PR. Amazon Bedrock models need the deployment's Bedrock configuration; see [Choosing a model](/models/choosing-a-model).
 
 ## @mention actions
 

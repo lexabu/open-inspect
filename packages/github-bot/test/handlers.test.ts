@@ -1056,7 +1056,7 @@ describe("multi-model reviews", () => {
     );
     const comment = JSON.parse(githubFetch.mock.calls[0][1].body).body;
     expect(comment).toContain("`GPT-6.2 Sol (Bedrock)`");
-    expect(comment).toContain("1 of 2 reviews");
+    expect(comment).toContain("1 of 2 reviews started");
   });
 
   it("still reports success when the reviewer-failure notice cannot be posted", async () => {
