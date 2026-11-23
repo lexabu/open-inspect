@@ -1,4 +1,8 @@
 import { fromMarkdown } from "mdast-util-from-markdown";
+import { gfmFootnoteFromMarkdown } from "mdast-util-gfm-footnote";
+import { gfmTableFromMarkdown } from "mdast-util-gfm-table";
+import { gfmFootnote } from "micromark-extension-gfm-footnote";
+import { gfmTable } from "micromark-extension-gfm-table";
 import { escapeRegExp } from "./regex";
 
 /**
@@ -47,14 +51,15 @@ function botMentionPattern(botUsername: string, flags: string): RegExp | null {
 /** Node types whose text is not prose: code blocks, inline code and raw HTML. */
 const NON_PROSE = new Set(["code", "inlineCode", "html"]);
 
-/** Inline HTML elements whose contents render as code. */
-const HTML_CODE_OPEN = /^<(code|pre|kbd|samp|tt)\b[^>]*>$/i;
+/** Inline HTML elements whose contents render as code, read from a tag's start. */
+const HTML_CODE_OPEN = /^<(code|pre|kbd|samp|tt)(?=[\s/>])/i;
+const HTML_CODE_CLOSE = /^<\/(code|pre|kbd|samp|tt)\s*>/i;
 
 /**
- * Bodies longer than this are matched as plain prose without parsing: nested
- * quotes make parse time grow quadratically (about 70 ms here, 2.7 s at GitHub's
- * 65,536-character cap). A mention inside code in such a body can trigger the
- * bot, which the sender permission check still gates.
+ * Bodies longer than this skip the Markdown parser: parse time grows
+ * quadratically with quote nesting (2.7 s at GitHub's 65,536-character cap).
+ * They get a linear scan for top-level fenced blocks instead, which covers
+ * pasted logs.
  */
 const MAX_PARSED_LENGTH = 20_000;
 
@@ -65,48 +70,99 @@ interface MarkdownNode {
   children?: MarkdownNode[];
 }
 
-/**
- * Prose and code segments, alternating with prose at even indexes. The body is
- * parsed as CommonMark, so code blocks inside lists or quotes, code spans (which
- * never cross a paragraph), raw HTML and inline `<code>` elements are found the
- * way GitHub renders them. The tree is walked iteratively, so deep nesting cannot
- * overflow the stack.
- */
-function segments(body: string): string[] {
-  if (body.length > MAX_PARSED_LENGTH) return [body];
+/** Code ranges from a CommonMark parse with GFM tables and footnotes. */
+function parsedCodeRanges(body: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
-  // Opening inline code tags waiting for their closing tag, by element name.
-  const openHtml = new Map<string, number>();
-  const stack: MarkdownNode[] = [fromMarkdown(body)];
+  const openHtml = new Map<string, { depth: number; start: number }>();
+  const tree = fromMarkdown(body, {
+    extensions: [gfmTable(), gfmFootnote()],
+    mdastExtensions: [gfmTableFromMarkdown(), gfmFootnoteFromMarkdown()],
+  });
+  // An explicit stack, so deep nesting cannot overflow; children are pushed in
+  // reverse so nodes are visited in document order.
+  const stack: MarkdownNode[] = [tree];
   while (stack.length > 0) {
     const node = stack.pop()!;
     const start = node.position?.start.offset;
     const end = node.position?.end.offset;
     if (NON_PROSE.has(node.type) && start !== undefined && end !== undefined) {
       ranges.push([start, end]);
-      if (node.type === "html") {
-        const opening = HTML_CODE_OPEN.exec(node.value ?? "");
-        const closing = /^<\/(code|pre|kbd|samp|tt)\s*>$/i.exec(node.value ?? "");
-        if (opening) openHtml.set(opening[1].toLowerCase(), start);
-        else if (closing && openHtml.has(closing[1].toLowerCase())) {
-          ranges.push([openHtml.get(closing[1].toLowerCase())!, end]);
-          openHtml.delete(closing[1].toLowerCase());
-        }
-      }
+      if (node.type === "html") trackHtmlCode(node.value ?? "", start, end, openHtml, ranges);
       continue;
     }
-    // Children in reverse so they are popped in document order.
     for (let i = (node.children?.length ?? 0) - 1; i >= 0; i--) stack.push(node.children![i]);
   }
-  ranges.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  return ranges;
+}
+
+/** Masks inline code elements from their outermost opening tag to its closing tag. */
+function trackHtmlCode(
+  tag: string,
+  start: number,
+  end: number,
+  open: Map<string, { depth: number; start: number }>,
+  ranges: Array<[number, number]>
+): void {
+  const opening = HTML_CODE_OPEN.exec(tag);
+  if (opening) {
+    const name = opening[1].toLowerCase();
+    const current = open.get(name);
+    if (current) current.depth++;
+    else open.set(name, { depth: 1, start });
+    return;
+  }
+  const closing = HTML_CODE_CLOSE.exec(tag);
+  const current = closing ? open.get(closing[1].toLowerCase()) : undefined;
+  if (!closing || !current) return;
+  current.depth--;
+  if (current.depth === 0) {
+    ranges.push([current.start, end]);
+    open.delete(closing[1].toLowerCase());
+  }
+}
+
+/** Top-level fenced blocks by a linear line scan, for bodies too long to parse. */
+function fencedRanges(body: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const lines = body.split(/(?<=\n)/);
+  let offset = 0;
+  let fence: { char: string; length: number; start: number } | null = null;
+  for (const line of lines) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      const closes =
+        marker &&
+        marker[1][0] === fence.char &&
+        marker[1].length >= fence.length &&
+        line.slice(marker[0].length).trim() === "";
+      if (closes) {
+        ranges.push([fence.start, offset + line.length]);
+        fence = null;
+      }
+    } else if (marker && !(marker[1][0] === "`" && line.slice(marker[0].length).includes("`"))) {
+      fence = { char: marker[1][0], length: marker[1].length, start: offset };
+    }
+    offset += line.length;
+  }
+  if (fence) ranges.push([fence.start, body.length]);
+  return ranges;
+}
+
+/** Prose and code segments, alternating with prose at even indexes. */
+function segments(body: string): string[] {
+  const ranges = body.length > MAX_PARSED_LENGTH ? fencedRanges(body) : parsedCodeRanges(body);
+  ranges.sort((x, y) => x[0] - y[0]);
+  // Overlapping or touching ranges (a <code> element and its tags) become one.
+  const merged: Array<[number, number]> = [];
+  for (const [start, end] of ranges) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
   const parts: string[] = [];
   let cursor = 0;
-  for (const [start, end] of ranges) {
-    if (end <= cursor) continue;
-    const from = Math.max(start, cursor);
-    if (from > cursor) parts.push(body.slice(cursor, from), body.slice(from, end));
-    else if (parts.length > 0) parts[parts.length - 1] += body.slice(from, end);
-    else parts.push("", body.slice(from, end));
+  for (const [start, end] of merged) {
+    parts.push(body.slice(cursor, start), body.slice(start, end));
     cursor = end;
   }
   parts.push(body.slice(cursor));

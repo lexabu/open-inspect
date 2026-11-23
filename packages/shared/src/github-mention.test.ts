@@ -17,6 +17,7 @@ describe("containsBotMention", () => {
     "a ~~~ b\n@nativepath-ai please look",
     "````\n```\n@nativepath-ai in code\n````\n@nativepath-ai after the block",
     "a stray ` here\n\n@nativepath-ai please look\n\nanother ` there",
+    "| a ` | b |\n| --- | --- |\n| @nativepath-ai | c ` |",
   ])("matches %s", (body) => {
     expect(containsBotMention(body, BOT)).toBe(true);
   });
@@ -42,6 +43,9 @@ describe("containsBotMention", () => {
     "<!-- @nativepath-ai in a comment -->",
     "The literal text is <code>@nativepath-ai</code>",
     "press <kbd>@nativepath-ai</kbd> to see",
+    '<code title="a>b">@nativepath-ai</code>',
+    "<kbd><kbd>Ctrl</kbd>+<kbd>@nativepath-ai</kbd></kbd>",
+    "Text[^1]\n\n[^1]: see `@nativepath-ai`",
   ])("does not match %s", (body) => {
     expect(containsBotMention(body, BOT)).toBe(false);
   });
@@ -138,10 +142,15 @@ describe("worst-case input", () => {
     expect(containsBotMention(body, BOT)).toBe(true);
   });
 
-  it("matches a very long body as prose without parsing it", () => {
-    const body = `${">".repeat(60_000)} @nativepath-ai`;
+  it("scans a very long body for fenced code without parsing it", () => {
+    const filler = "log line\n".repeat(3_000);
+    const fenced = `${filler}\n\`\`\`\n@nativepath-ai in a pasted log\n\`\`\`\n`;
+    expect(containsBotMention(fenced, BOT)).toBe(false);
+    expect(stripBotMention(`@nativepath-ai look\n${fenced}`, BOT)).toContain(
+      "@nativepath-ai in a pasted log"
+    );
     const started = performance.now();
-    expect(containsBotMention(body, BOT)).toBe(true);
+    expect(containsBotMention(`${">".repeat(60_000)} @nativepath-ai`, BOT)).toBe(true);
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
