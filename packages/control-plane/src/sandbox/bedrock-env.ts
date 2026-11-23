@@ -1,5 +1,6 @@
 import { mintBedrockApiKey, type AwsAccessKey } from "@open-inspect/shared/bedrock-api-key";
 import type { HarnessId } from "@open-inspect/shared/harnesses";
+import { extractProviderAndModel } from "@open-inspect/shared/models";
 import type {
   SessionProviderAuthMode,
   SubscriptionProviderId,
@@ -11,26 +12,46 @@ export interface BedrockSandboxConfig {
   region: string;
 }
 
+/** OpenCode's provider id for Amazon Bedrock models (`amazon-bedrock/<model>`). */
+const OPENCODE_BEDROCK_PROVIDER = "amazon-bedrock";
+
 /**
- * The variables that put a Claude Agent API-key session on Bedrock, with a
- * short-term key minted now, or none when Bedrock is off or the session runs
- * another harness or a connected Claude account. The IAM key never leaves the
- * control plane; only the 12-hour Bedrock-only key reaches the sandbox, so
- * every launch (create or snapshot restore) must mint a fresh one.
+ * The variables that put a session on Bedrock, with a short-term key minted
+ * now, or none when Bedrock is off or the session does not run on it:
+ * - a Claude Agent API-key session (Claude Code reads CLAUDE_CODE_USE_BEDROCK);
+ * - an OpenCode session whose model is on OpenCode's `amazon-bedrock` provider.
+ *
+ * The IAM key never leaves the control plane; only the 12-hour Bedrock-only key
+ * reaches the sandbox, so every launch (create or snapshot restore) must mint a
+ * fresh one.
  */
-export async function claudeBedrockEnv(
+export async function bedrockSandboxEnv(
   config: BedrockSandboxConfig | null,
   session: {
     harness: HarnessId;
+    model: string;
     providerAuthModes: Readonly<Record<SubscriptionProviderId, SessionProviderAuthMode>>;
   },
   now: Date = new Date()
 ): Promise<Record<string, string>> {
-  if (!config || session.harness !== "claude") return {};
-  if (session.providerAuthModes.anthropic !== "api_key") return {};
-  return {
-    CLAUDE_CODE_USE_BEDROCK: "1",
-    AWS_REGION: config.region,
-    AWS_BEARER_TOKEN_BEDROCK: await mintBedrockApiKey(config.accessKey, config.region, now),
-  };
+  if (!config) return {};
+  const mint = () => mintBedrockApiKey(config.accessKey, config.region, now);
+
+  if (session.harness === "claude") {
+    if (session.providerAuthModes.anthropic !== "api_key") return {};
+    return {
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      AWS_REGION: config.region,
+      AWS_BEARER_TOKEN_BEDROCK: await mint(),
+    };
+  }
+
+  if (
+    session.harness === "opencode" &&
+    extractProviderAndModel(session.model).provider === OPENCODE_BEDROCK_PROVIDER
+  ) {
+    return { AWS_REGION: config.region, AWS_BEARER_TOKEN_BEDROCK: await mint() };
+  }
+
+  return {};
 }

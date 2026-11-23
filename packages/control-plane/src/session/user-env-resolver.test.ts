@@ -375,7 +375,7 @@ describe("UserEnvResolver", () => {
     });
   });
 
-  describe("Bedrock for Claude Agent API-key sessions", () => {
+  describe("Bedrock for Claude Agent API-key and OpenCode Bedrock sessions", () => {
     const BEDROCK: BedrockSandboxConfig = {
       accessKey: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "iam-secret" },
       region: "us-east-1",
@@ -396,6 +396,23 @@ describe("UserEnvResolver", () => {
       });
       expect(JSON.stringify(env)).not.toContain("iam-secret");
       expect(JSON.stringify(h.logs)).not.toContain(env?.AWS_BEARER_TOKEN_BEDROCK);
+    });
+
+    it("gives an OpenCode session on a Bedrock model a short-term key and never the IAM key", async () => {
+      const h = makeHarness({
+        session: sessionRow({ harness: "opencode", model: "amazon-bedrock/openai.gpt-6.2-sol" }),
+        bedrock: BEDROCK,
+      });
+      h.db.providerAuthRows = providerAuthRows(API_KEY_MODES);
+
+      const env = (await h.resolver.getUserEnvVars()) ?? {};
+
+      expect(env).toMatchObject({
+        AWS_REGION: "us-east-1",
+        AWS_BEARER_TOKEN_BEDROCK: expect.stringMatching(/^bedrock-api-key-/),
+      });
+      expect(env).not.toHaveProperty("CLAUDE_CODE_USE_BEDROCK");
+      expect(JSON.stringify(env)).not.toContain("iam-secret");
     });
 
     it("mints a new key for every launch", async () => {
@@ -423,7 +440,11 @@ describe("UserEnvResolver", () => {
         harness: "claude" as const,
         modes: { ...API_KEY_MODES, anthropic: "provider_account" as const },
       },
-      { label: "the OpenCode harness", harness: "opencode" as const, modes: API_KEY_MODES },
+      {
+        label: "the OpenCode harness on a non-Bedrock model",
+        harness: "opencode" as const,
+        modes: API_KEY_MODES,
+      },
     ])("adds nothing for $label", async ({ harness, modes }) => {
       const h = makeHarness({ session: sessionRow({ harness }), bedrock: BEDROCK });
       h.db.providerAuthRows = providerAuthRows(modes);

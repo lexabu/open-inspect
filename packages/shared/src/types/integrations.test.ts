@@ -8,6 +8,7 @@ import {
   INTERNAL_TTYD_PORT,
   INTERNAL_VNC_PORT,
   MAX_BUILD_TIMEOUT_SECONDS,
+  MAX_GITHUB_REVIEWERS,
   MAX_SLACK_ROUTING_RULES,
   isValidSandboxTimeoutMs,
   findSandboxPortConflict,
@@ -521,6 +522,28 @@ describe("integration settings schemas", () => {
     ).toBe(false);
     expect(
       integrationSettingsSchemas.slack.repo.safeParse({ agentNotificationsEnabled: "yes" }).success
+    ).toBe(false);
+  });
+
+  it("parses a GitHub reviewer list and bounds its size", () => {
+    const claude = { model: "anthropic/claude-opus-4-5", harness: "claude" };
+    const gpt = {
+      model: "amazon-bedrock/openai.gpt-6.2-sol",
+      harness: "opencode",
+      reasoningEffort: "high",
+    };
+    expect(
+      integrationSettingsSchemas.github.repo.safeParse({ reviewers: [claude, gpt] }).success
+    ).toBe(true);
+    expect(integrationSettingsSchemas.github.repo.safeParse({ reviewers: [] }).success).toBe(false);
+    expect(
+      integrationSettingsSchemas.github.repo.safeParse({
+        reviewers: Array.from({ length: MAX_GITHUB_REVIEWERS + 1 }, () => claude),
+      }).success
+    ).toBe(false);
+    expect(
+      integrationSettingsSchemas.github.repo.safeParse({ reviewers: [{ model: claude.model }] })
+        .success
     ).toBe(false);
   });
 

@@ -22,6 +22,7 @@ vi.mock("../src/utils/integration-config", () => ({
     model: "anthropic/claude-haiku-4-5",
     harness: "opencode",
     reasoningEffort: null,
+    reviewers: null,
     autoReviewOnOpen: true,
     enabledRepos: null,
     allowedTriggerUsers: null,
@@ -34,6 +35,7 @@ const defaultConfig: ResolvedGitHubConfig = {
   model: "anthropic/claude-haiku-4-5",
   harness: "opencode",
   reasoningEffort: null,
+  reviewers: null,
   autoReviewOnOpen: true,
   enabledRepos: null,
   allowedTriggerUsers: null,
@@ -719,8 +721,7 @@ describe("handlePullRequestOpened", () => {
 
     expect(result).toEqual({
       outcome: "processed",
-      session_id: "session-123",
-      message_id: "msg-456",
+      sessions: [expect.objectContaining({ session_id: "session-123", message_id: "msg-456" })],
       handler_action: "auto_review",
     });
     expect(generateInstallationToken).toHaveBeenCalled();
@@ -821,8 +822,7 @@ describe("handlePullRequestOpened", () => {
 
     expect(result).toEqual({
       outcome: "processed",
-      session_id: "session-123",
-      message_id: "msg-456",
+      sessions: [expect.objectContaining({ session_id: "session-123", message_id: "msg-456" })],
       handler_action: "auto_review",
     });
     expect(sessionCreateBody(getControlPlaneFetch(env)).scmLogin).toBe("test-bot[bot]");
@@ -941,6 +941,129 @@ describe("handlePullRequestOpened", () => {
   });
 });
 
+describe("multi-model reviews", () => {
+  const reviewers = [
+    { model: "anthropic/claude-opus-4-5", harness: "claude" as const },
+    {
+      model: "amazon-bedrock/openai.gpt-6.2-sol",
+      harness: "opencode" as const,
+      reasoningEffort: "high",
+    },
+  ];
+
+  function sessionCreateBodies(env: Env) {
+    return getControlPlaneFetch(env)
+      .mock.calls.filter(([url]) => url === "https://internal/sessions")
+      .map(([, init]) => JSON.parse((init as { body: string }).body));
+  }
+
+  function promptBodies(env: Env): string[] {
+    return getControlPlaneFetch(env)
+      .mock.calls.filter(([url]) => String(url).endsWith("/prompt"))
+      .map(([, init]) => JSON.parse((init as { body: string }).body).content);
+  }
+
+  it.each([
+    {
+      name: "a review request",
+      run: (env: Env, log: Logger) =>
+        handleReviewRequested(env, log, reviewRequestedPayload, "trace-multi"),
+    },
+    {
+      name: "an auto-review",
+      run: (env: Env, log: Logger) =>
+        handlePullRequestOpened(env, log, pullRequestOpenedPayload, "trace-multi"),
+    },
+  ])("starts one session per reviewer for $name, each naming its model", async ({ run }) => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, reviewers });
+    const env = createMockEnv();
+
+    const result = await run(env, createMockLogger());
+
+    expect(result).toMatchObject({
+      outcome: "processed",
+      sessions: [
+        expect.objectContaining({ model: "anthropic/claude-opus-4-5" }),
+        expect.objectContaining({ model: "amazon-bedrock/openai.gpt-6.2-sol" }),
+      ],
+    });
+    expect(sessionCreateBodies(env)).toEqual([
+      expect.objectContaining({
+        model: "anthropic/claude-opus-4-5",
+        harness: "claude",
+        title: expect.stringContaining("(Claude Opus 4.5)"),
+      }),
+      expect.objectContaining({
+        model: "amazon-bedrock/openai.gpt-6.2-sol",
+        harness: "opencode",
+        reasoningEffort: "high",
+        title: expect.stringContaining("(GPT-6.2 Sol (Bedrock))"),
+      }),
+    ]);
+    const prompts = promptBodies(env);
+    expect(prompts).toHaveLength(2);
+    expect(prompts.some((prompt) => prompt.includes("**Reviewer: Claude Opus 4.5**"))).toBe(true);
+    expect(prompts.some((prompt) => prompt.includes("**Reviewer: GPT-6.2 Sol (Bedrock)**"))).toBe(
+      true
+    );
+    expect(postReaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a single session for comment actions", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, reviewers });
+    const env = createMockEnv();
+
+    await handleIssueComment(env, createMockLogger(), issueCommentPayload, "trace-comment");
+
+    expect(sessionCreateBodies(env)).toEqual([
+      expect.objectContaining({ model: "anthropic/claude-haiku-4-5", harness: "opencode" }),
+    ]);
+    expect(promptBodies(env)[0]).not.toContain("**Reviewer:");
+  });
+
+  it("says on the PR which reviewer failed when the others started", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, reviewers });
+    const env = createMockEnv();
+    mockControlPlaneResponse(env, /^https:\/\/internal\/sessions$/, () => {
+      const created = sessionCreateBodies(env).length;
+      return created === 1
+        ? Response.json({ sessionId: "session-123", status: "created" })
+        : new Response("boom", { status: 500 });
+    });
+    const githubFetch = vi.fn().mockResolvedValue(new Response("", { status: 201 }));
+    vi.stubGlobal("fetch", githubFetch);
+    const log = createMockLogger();
+
+    const result = await handleReviewRequested(env, log, reviewRequestedPayload, "trace-partial");
+
+    expect(result).toMatchObject({
+      outcome: "processed",
+      sessions: [expect.objectContaining({ model: "anthropic/claude-opus-4-5" })],
+    });
+    expect(log.error).toHaveBeenCalledWith(
+      "session.reviewer_launch_failed",
+      expect.objectContaining({ model: "amazon-bedrock/openai.gpt-6.2-sol" })
+    );
+    const comment = JSON.parse(githubFetch.mock.calls[0][1].body).body;
+    expect(comment).toContain("`GPT-6.2 Sol (Bedrock)`");
+    expect(comment).toContain("1 of 2 reviews");
+  });
+
+  it("throws when every reviewer fails to start", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, reviewers });
+    const env = createMockEnv();
+    mockControlPlaneResponse(
+      env,
+      /^https:\/\/internal\/sessions$/,
+      () => new Response("boom", { status: 500 })
+    );
+
+    await expect(
+      handleReviewRequested(env, createMockLogger(), reviewRequestedPayload, "trace-down")
+    ).rejects.toThrow("Session creation failed: 500");
+  });
+});
+
 describe("handleReviewRequested", () => {
   it("creates session, posts reaction, and sends prompt", async () => {
     const env = createMockEnv();
@@ -950,8 +1073,7 @@ describe("handleReviewRequested", () => {
 
     expect(result).toEqual({
       outcome: "processed",
-      session_id: "session-123",
-      message_id: "msg-456",
+      sessions: [expect.objectContaining({ session_id: "session-123", message_id: "msg-456" })],
       handler_action: "review",
     });
     expect(generateInstallationToken).toHaveBeenCalledWith({
@@ -1155,8 +1277,7 @@ describe("handleIssueComment", () => {
 
     expect(result).toEqual({
       outcome: "processed",
-      session_id: "session-123",
-      message_id: "msg-456",
+      sessions: [expect.objectContaining({ session_id: "session-123", message_id: "msg-456" })],
       handler_action: "comment",
     });
     expect(postReaction).toHaveBeenCalledWith(
@@ -1272,8 +1393,7 @@ describe("handleReviewComment", () => {
 
     expect(result).toEqual({
       outcome: "processed",
-      session_id: "session-123",
-      message_id: "msg-456",
+      sessions: [expect.objectContaining({ session_id: "session-123", message_id: "msg-456" })],
       handler_action: "review_comment",
     });
     expect(postReaction).toHaveBeenCalledWith(
@@ -2063,7 +2183,10 @@ describe("default environment targets", () => {
 
     const result = await handleReviewRequested(env, log, reviewRequestedPayload, "trace-env");
 
-    expect(result).toMatchObject({ outcome: "processed", session_id: "session-123" });
+    expect(result).toMatchObject({
+      outcome: "processed",
+      sessions: [expect.objectContaining({ session_id: "session-123" })],
+    });
     const sessionBody = sessionCreateBody(getControlPlaneFetch(env));
     expect(sessionBody.environmentId).toBe("env_abc");
     expect(sessionBody.repoOwner).toBeUndefined();

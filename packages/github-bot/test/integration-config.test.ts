@@ -57,6 +57,7 @@ describe("getGitHubConfig", () => {
       model: "anthropic/claude-opus-4-6",
       harness: "opencode",
       reasoningEffort: "high",
+      reviewers: null,
       autoReviewOnOpen: true,
       enabledRepos: null,
       allowedTriggerUsers: null,
@@ -64,6 +65,36 @@ describe("getGitHubConfig", () => {
       commentActionInstructions: null,
     });
     expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("parses a reviewer list from a successful response", async () => {
+    const reviewers = [
+      { model: "anthropic/claude-opus-4-5", harness: "claude" },
+      { model: "amazon-bedrock/openai.gpt-6.2-sol", harness: "opencode", reasoningEffort: "high" },
+    ];
+    const env = createMockEnv(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            config: {
+              model: "anthropic/claude-opus-4-6",
+              reasoningEffort: null,
+              reviewers,
+              autoReviewOnOpen: true,
+              enabledRepos: null,
+              allowedTriggerUsers: null,
+              codeReviewInstructions: null,
+              commentActionInstructions: null,
+            },
+          }),
+          { status: 200 }
+        )
+      )
+    );
+
+    const result = await getGitHubConfig(env, "acme/widgets", createMockLogger());
+
+    expect(result.reviewers).toEqual(reviewers);
   });
 
   it("parses the harness from a successful response", async () => {
@@ -145,6 +176,7 @@ describe("getGitHubConfig", () => {
       model: "anthropic/claude-haiku-4-5",
       harness: "opencode",
       reasoningEffort: null,
+      reviewers: null,
       autoReviewOnOpen: false,
       enabledRepos: ["acme/widgets"],
       allowedTriggerUsers: ["octocat"],
@@ -165,6 +197,7 @@ describe("getGitHubConfig", () => {
       model: "anthropic/claude-haiku-4-5",
       harness: "opencode",
       reasoningEffort: null,
+      reviewers: null,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -187,6 +220,7 @@ describe("getGitHubConfig", () => {
       model: "anthropic/claude-haiku-4-5",
       harness: "opencode",
       reasoningEffort: null,
+      reviewers: null,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -209,6 +243,7 @@ describe("getGitHubConfig", () => {
       model: "anthropic/claude-haiku-4-5",
       harness: "opencode",
       reasoningEffort: null,
+      reviewers: null,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -236,6 +271,7 @@ describe("getGitHubConfig", () => {
       model: "anthropic/claude-haiku-4-5",
       harness: "opencode",
       reasoningEffort: null,
+      reviewers: null,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -261,6 +297,7 @@ describe("getGitHubConfig", () => {
       model: "anthropic/claude-haiku-4-5",
       harness: "opencode",
       reasoningEffort: null,
+      reviewers: null,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -281,6 +318,7 @@ describe("getGitHubConfig", () => {
       model: "anthropic/claude-haiku-4-5",
       harness: "opencode",
       reasoningEffort: null,
+      reviewers: null,
       autoReviewOnOpen: true,
       enabledRepos: null,
       allowedTriggerUsers: null,

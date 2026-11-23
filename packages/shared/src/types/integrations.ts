@@ -62,12 +62,33 @@ export const GITHUB_AUTOFIX_DEFAULTS: ResolvedGitHubAutofixSettings = {
   maxAttemptsPerPrPer24Hours: GITHUB_AUTOFIX_DEFAULT_ATTEMPT_LIMIT,
 };
 
+/** Upper bound on configured PR reviewers; each one is a separate sandbox session. */
+export const MAX_GITHUB_REVIEWERS = 4;
+
+/**
+ * One independent PR reviewer. A review request starts one session per reviewer,
+ * so reviewers on different model providers check the same PR separately.
+ */
+export const githubReviewerSchema = z.strictObject({
+  model: z.string(),
+  harness: harnessIdSchema,
+  reasoningEffort: z.string().optional(),
+});
+
+export type GitHubReviewer = z.infer<typeof githubReviewerSchema>;
+
 /** Overridable behavior settings for the GitHub bot. Used at both global and repo levels. */
 export const githubBotSettingsSchema = z.strictObject({
   autoReviewOnOpen: z.boolean().optional(),
   model: z.string().optional(),
   harness: harnessIdSchema.optional(),
   reasoningEffort: z.string().optional(),
+  /**
+   * Reviewers for review requests and auto-reviews. When set, they replace the
+   * single model/harness/reasoningEffort selection for reviews; comment-triggered
+   * sessions keep that selection.
+   */
+  reviewers: z.array(githubReviewerSchema).min(1).max(MAX_GITHUB_REVIEWERS).optional(),
   allowedTriggerUsers: z.array(z.string()).optional(),
   codeReviewInstructions: z.string().optional(),
   commentActionInstructions: z.string().optional(),
