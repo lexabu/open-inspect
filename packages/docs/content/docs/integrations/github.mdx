@@ -103,7 +103,7 @@ Send that body to `PUT /api/integration-settings/github/repos/<owner>/<name>` fo
 
 ## @mention actions
 
-**Conversation comments.** Mention the bot in a PR conversation comment to ask for analysis, a follow-up answer, or a GitHub reply. The mention is stripped and the rest of the comment becomes the prompt.
+**Conversation comments.** Mention the bot in a PR conversation comment to ask for analysis, a follow-up answer, or a GitHub reply. The mention is stripped and the rest of the comment becomes the prompt. Use the App's handle with or without `[bot]` (`@my-app` or `@my-app[bot]`); GitHub does not autocomplete Apps, so type it in full.
 
 ```text
 @my-app[bot] can you explain why this retry path is failing?
@@ -301,7 +301,8 @@ Setup, rotation, and limitations are covered in [Source control](/configure/sour
 </Accordion>
   <Accordion title="A mention did not start a session">
     Mentions must be in a PR conversation comment or a PR review thread; issues are ignored. Use the
-    bot's full username including `[bot]`, such as `@my-app[bot]`.
+    App's handle with or without `[bot]` (`@my-app` or `@my-app[bot]`), typed in full: GitHub does
+    not autocomplete Apps.
 
 </Accordion>
   <Accordion title="I see an eyes reaction but no follow-up">

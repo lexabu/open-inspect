@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { GitHubAutofixEnvelope } from "@open-inspect/shared";
-import { containsBotMention } from "./github-mention";
+import { containsBotMention } from "@open-inspect/shared/github-mention";
 
 const repositorySchema = z.object({
   id: z.number().int().positive(),
