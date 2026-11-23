@@ -82,7 +82,7 @@ flowchart TB
 
 A review is most useful when it comes from a different model provider than the one that wrote the code, because one provider tends to miss the same things it got wrong. If your team writes most code with Claude, set the GitHub default model to a GPT model (for example `amazon-bedrock/openai.gpt-6.2-sol` on the **OpenCode** harness), and every review comes from GPT.
 
-To run more than one reviewer, set `reviewers` in the GitHub integration settings, globally or per repository. A review request or auto-review then starts one session per reviewer, at most four. Each review starts with a `Reviewer: <model>` line so readers can tell which model found what. `@mention` actions keep the single default model.
+To run more than one reviewer, set `reviewers` in the GitHub integration settings, globally or per repository. A review request or auto-review then starts one session per reviewer, at most four. With more than one reviewer, each review starts with a `Reviewer: <model>` line so readers can tell which model found what, and each posts a comment review with its verdict in the text, because all reviewers share one GitHub App identity. When `reviewers` resolves from either level, reviews ignore the default model; `@mention` actions keep using it.
 
 ```json
 {

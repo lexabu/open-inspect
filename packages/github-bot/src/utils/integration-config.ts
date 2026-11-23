@@ -7,7 +7,11 @@ import { signedControlPlaneFetch } from "../internal-auth";
 import type { Logger } from "../logger";
 import { z } from "zod";
 import { DEFAULT_HARNESS, harnessIdSchema, type HarnessId } from "@open-inspect/shared/harnesses";
-import { githubReviewerSchema, type GitHubReviewer } from "@open-inspect/shared/types/integrations";
+import {
+  githubReviewerSchema,
+  MAX_GITHUB_REVIEWERS,
+  type GitHubReviewer,
+} from "@open-inspect/shared/types/integrations";
 
 export interface ResolvedGitHubConfig {
   model: string;
@@ -30,7 +34,12 @@ const resolvedGitHubConfigResponseSchema = z.object({
       harness: harnessIdSchema.default(DEFAULT_HARNESS),
       reasoningEffort: z.string().nullable(),
       // Control planes that predate reviewer lists omit it.
-      reviewers: z.array(githubReviewerSchema).nullable().default(null),
+      reviewers: z
+        .array(githubReviewerSchema)
+        .min(1)
+        .max(MAX_GITHUB_REVIEWERS)
+        .nullable()
+        .default(null),
       autoReviewOnOpen: z.boolean(),
       enabledRepos: z.array(z.string()).nullable(),
       allowedTriggerUsers: z.array(z.string()).nullable(),

@@ -288,6 +288,14 @@ export async function startSession(
         const messageId = await sendPrompt(env, traceId, sessionId, {
           content: prompt,
           authorId: `github:${sender.id}`,
+        }).catch((error: unknown) => {
+          // The session exists but got no prompt; name it so it can be found and archived.
+          log.error("session.prompt_failed", {
+            ...meta,
+            session_id: sessionId,
+            model: selection.model,
+          });
+          throw error;
         });
         log.info("prompt.sent", {
           ...meta,
