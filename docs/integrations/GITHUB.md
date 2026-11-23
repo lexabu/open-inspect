@@ -375,8 +375,8 @@ If a PR was converted from draft to ready for review, mention the bot in a PR co
 ### A mention did not start a session
 
 Mentions must be in a pull request conversation comment or PR review thread. Mentions on ordinary
-GitHub issues are ignored. Use the bot's full GitHub username, including `[bot]`, such as
-`@my-app[bot]`.
+GitHub issues are ignored. Use the App's handle, with or without `[bot]`: `@my-app` and
+`@my-app[bot]` both work. GitHub does not autocomplete Apps, so type the handle in full.
 
 ### I see an eyes reaction but no follow-up
 
