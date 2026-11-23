@@ -40,6 +40,8 @@ describe("containsBotMention", () => {
     "- step one\n  ```\n  @nativepath-ai in a listed fence\n  ```",
     "> ~~~\n> @nativepath-ai in a quoted fence\n> ~~~",
     "<!-- @nativepath-ai in a comment -->",
+    "The literal text is <code>@nativepath-ai</code>",
+    "press <kbd>@nativepath-ai</kbd> to see",
   ])("does not match %s", (body) => {
     expect(containsBotMention(body, BOT)).toBe(false);
   });
@@ -83,6 +85,12 @@ describe("stripBotMention", () => {
     ).toBe("see ``a\n@nativepath-ai b`` and\n````\n@nativepath-ai\n````");
   });
 
+  it("leaves inline <code> elements untouched", () => {
+    expect(stripBotMention("@nativepath-ai what is <code>@nativepath-ai</code>?", BOT)).toBe(
+      "what is <code>@nativepath-ai</code>?"
+    );
+  });
+
   it("leaves an email in any script untouched", () => {
     expect(stripBotMention("用户@nativepath-ai.公司", BOT)).toBe("用户@nativepath-ai.公司");
   });
@@ -122,6 +130,19 @@ describe("worst-case input", () => {
     const started = performance.now();
     expect(containsBotMention(body, BOT)).toBe(true);
     expect(performance.now() - started).toBeLessThan(5000);
+  });
+
+  it("survives deeply nested quotes without overflowing", () => {
+    const body = `${">".repeat(16_000)} @nativepath-ai`;
+    expect(() => containsBotMention(body, BOT)).not.toThrow();
+    expect(containsBotMention(body, BOT)).toBe(true);
+  });
+
+  it("matches a very long body as prose without parsing it", () => {
+    const body = `${">".repeat(60_000)} @nativepath-ai`;
+    const started = performance.now();
+    expect(containsBotMention(body, BOT)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 
   it("skips parsing when the handle never appears", () => {
