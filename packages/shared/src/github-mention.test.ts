@@ -12,6 +12,10 @@ describe("containsBotMention", () => {
     "ping @nativepath-ai.",
     "see @nativepath-ai[bot][^1]",
     "first line\n@nativepath-ai please look",
+    "_@nativepath-ai_ please look",
+    "@nativepath-ai[^1] please look",
+    "a ~~~ b\n@nativepath-ai please look",
+    "````\n```\n@nativepath-ai in code\n````\n@nativepath-ai after the block",
   ])("matches %s", (body) => {
     expect(containsBotMention(body, BOT)).toBe(true);
   });
@@ -26,6 +30,12 @@ describe("containsBotMention", () => {
     "cc @nativepath-ai/reviewers",
     "the handle is `@nativepath-ai`",
     "```\n@nativepath-ai review\n```",
+    "``code with\n@nativepath-ai inside``",
+    "````\n```\n@nativepath-ai still code\n````",
+    "~~~ts\n@nativepath-ai in an unclosed fence",
+    "用户@nativepath-ai.公司",
+    "@nativepath-ai\u200b-other review this",
+    "x\u200b@nativepath-ai review this",
   ])("does not match %s", (body) => {
     expect(containsBotMention(body, BOT)).toBe(false);
   });
@@ -58,6 +68,19 @@ describe("stripBotMention", () => {
     expect(stripBotMention("@nativepath-ai fix this, then @nativepath-ai[bot] rerun", BOT)).toBe(
       "fix this, then  rerun"
     );
+  });
+
+  it("leaves multiline code spans and long fences untouched", () => {
+    expect(
+      stripBotMention(
+        "@nativepath-ai see ``a\n@nativepath-ai b`` and\n````\n@nativepath-ai\n````",
+        BOT
+      )
+    ).toBe("see ``a\n@nativepath-ai b`` and\n````\n@nativepath-ai\n````");
+  });
+
+  it("leaves an email in any script untouched", () => {
+    expect(stripBotMention("用户@nativepath-ai.公司", BOT)).toBe("用户@nativepath-ai.公司");
   });
 
   it("leaves code, emails and team handles as written", () => {
