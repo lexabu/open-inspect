@@ -290,9 +290,7 @@
     "@octokit/webhooks-types": "^7.6.1",
     "cron-parser": "^5.10.2",
     "mdast-util-from-markdown": "2.1.0",
-    "mdast-util-gfm-footnote": "2.1.0",
     "mdast-util-gfm-table": "2.0.0",
-    "micromark-extension-gfm-footnote": "2.1.0",
     "micromark-extension-gfm-table": "2.1.2",
     "zod": "^4.6.7"
   }

@@ -1,7 +1,5 @@
 import { fromMarkdown } from "mdast-util-from-markdown";
-import { gfmFootnoteFromMarkdown } from "mdast-util-gfm-footnote";
 import { gfmTableFromMarkdown } from "mdast-util-gfm-table";
-import { gfmFootnote } from "micromark-extension-gfm-footnote";
 import { gfmTable } from "micromark-extension-gfm-table";
 import { escapeRegExp } from "./regex";
 
@@ -70,13 +68,17 @@ interface MarkdownNode {
   children?: MarkdownNode[];
 }
 
-/** Code ranges from a CommonMark parse with GFM tables and footnotes. */
+/**
+ * Code ranges from a CommonMark parse with GFM tables. (The GFM footnote and
+ * autolink extensions are left out: footnotes scan backwards quadratically on
+ * bracket-heavy input, and the autolink transform recurses on deep nesting.)
+ */
 function parsedCodeRanges(body: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
   const openHtml = new Map<string, { depth: number; start: number }>();
   const tree = fromMarkdown(body, {
-    extensions: [gfmTable(), gfmFootnote()],
-    mdastExtensions: [gfmTableFromMarkdown(), gfmFootnoteFromMarkdown()],
+    extensions: [gfmTable()],
+    mdastExtensions: [gfmTableFromMarkdown()],
   });
   // An explicit stack, so deep nesting cannot overflow; children are pushed in
   // reverse so nodes are visited in document order.
@@ -121,25 +123,55 @@ function trackHtmlCode(
   }
 }
 
-/** Top-level fenced blocks by a linear line scan, for bodies too long to parse. */
+/**
+ * A line without its leading list-item and block-quote markers (any mix of `>`,
+ * bullets and ordered-list numbers), for the fallback scan. A plain loop rather
+ * than a regex, so long runs of markers cannot backtrack.
+ */
+function withoutContainers(line: string): string {
+  let i = 0;
+  for (;;) {
+    let j = i;
+    while (line[j] === " " || line[j] === "\t") j++;
+    let next = -1;
+    if (line[j] === ">") next = j + 1;
+    else if ("-*+".includes(line[j] ?? "x") && /^[ \t]?$/.test(line[j + 1] ?? "")) next = j + 1;
+    else {
+      let k = j;
+      while (k < j + 9 && line[k] >= "0" && line[k] <= "9") k++;
+      if (k > j && (line[k] === "." || line[k] === ")") && /^[ \t]?$/.test(line[k + 1] ?? "")) {
+        next = k + 1;
+      }
+    }
+    if (next < 0) return line.slice(j);
+    i = line[next] === " " || line[next] === "\t" ? next + 1 : next;
+  }
+}
+
+const FENCE = /^(`{3,}|~{3,})(.*)$/s;
+
+/**
+ * Fenced blocks by a linear line scan, for bodies too long to parse. Fences may
+ * sit inside list items or quotes; a closing fence uses the same character, at
+ * least as many, and nothing else on its line.
+ */
 function fencedRanges(body: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
-  const lines = body.split(/(?<=\n)/);
   let offset = 0;
   let fence: { char: string; length: number; start: number } | null = null;
-  for (const line of lines) {
-    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+  for (const line of body.split(/(?<=\n)/)) {
+    const marker = FENCE.exec(withoutContainers(line.replace(/\r?\n$/, "")));
     if (fence) {
-      const closes =
+      if (
         marker &&
         marker[1][0] === fence.char &&
         marker[1].length >= fence.length &&
-        line.slice(marker[0].length).trim() === "";
-      if (closes) {
+        marker[2].trim() === ""
+      ) {
         ranges.push([fence.start, offset + line.length]);
         fence = null;
       }
-    } else if (marker && !(marker[1][0] === "`" && line.slice(marker[0].length).includes("`"))) {
+    } else if (marker && !(marker[1][0] === "`" && marker[2].includes("`"))) {
       fence = { char: marker[1][0], length: marker[1].length, start: offset };
     }
     offset += line.length;

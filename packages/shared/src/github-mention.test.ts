@@ -45,7 +45,6 @@ describe("containsBotMention", () => {
     "press <kbd>@nativepath-ai</kbd> to see",
     '<code title="a>b">@nativepath-ai</code>',
     "<kbd><kbd>Ctrl</kbd>+<kbd>@nativepath-ai</kbd></kbd>",
-    "Text[^1]\n\n[^1]: see `@nativepath-ai`",
   ])("does not match %s", (body) => {
     expect(containsBotMention(body, BOT)).toBe(false);
   });
@@ -151,6 +150,32 @@ describe("worst-case input", () => {
     );
     const started = performance.now();
     expect(containsBotMention(`${">".repeat(60_000)} @nativepath-ai`, BOT)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("keeps a mention after a fenced log inside a list item in a very long body", () => {
+    const log = "    log line\n".repeat(2_000);
+    const body = `- deploy failed:\n  \`\`\`\n${log}  \`\`\`\n\n@nativepath-ai what broke?`;
+    expect(body.length).toBeGreaterThan(20_000);
+    expect(containsBotMention(body, BOT)).toBe(true);
+    expect(containsBotMention(body.replace("@nativepath-ai what broke?", "done"), BOT)).toBe(false);
+  });
+
+  it("parses a bracket-heavy comment below the parse cutoff in bounded time", () => {
+    const body = `${"[".repeat(9_000)}${"]".repeat(9_000)} @nativepath-ai`;
+    const started = performance.now();
+    expect(containsBotMention(body, BOT)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it.each([
+    ["spaces", " ".repeat(60_000)],
+    ["bullets", "- ".repeat(30_000)],
+    ["quotes", "> ".repeat(30_000)],
+    ["numbers", "1. ".repeat(20_000)],
+  ])("scans a very long line of %s in bounded time", (_label, prefix) => {
+    const started = performance.now();
+    expect(containsBotMention(`${prefix}x @nativepath-ai`, BOT)).toBe(true);
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
