@@ -15,6 +15,29 @@ export interface BedrockSandboxConfig {
 /** OpenCode's provider id for Amazon Bedrock models (`amazon-bedrock/<model>`). */
 const OPENCODE_BEDROCK_PROVIDER = "amazon-bedrock";
 
+function isOpenCodeBedrockModel(model: string): boolean {
+  return extractProviderAndModel(model).provider === OPENCODE_BEDROCK_PROVIDER;
+}
+
+/**
+ * Why a prompt cannot run `model` on OpenCode's Bedrock provider in this
+ * session, or null when it can (or the model is not a Bedrock model). The key
+ * is minted at sandbox launch from the session model, so a session that started
+ * on another model has no key for a later per-message switch to Bedrock.
+ */
+export function bedrockModelUnavailableReason(
+  config: BedrockSandboxConfig | null,
+  session: { harness: HarnessId; model: string },
+  model: string
+): string | null {
+  if (!isOpenCodeBedrockModel(model)) return null;
+  if (!config) return "Amazon Bedrock is not configured for this deployment.";
+  if (session.harness !== "opencode" || !isOpenCodeBedrockModel(session.model)) {
+    return "Amazon Bedrock models need a Bedrock key from the start of the session. Start a new session with this model.";
+  }
+  return null;
+}
+
 /**
  * The variables that put a session on Bedrock, with a short-term key minted
  * now, or none when Bedrock is off or the session does not run on it:
@@ -46,10 +69,7 @@ export async function bedrockSandboxEnv(
     };
   }
 
-  if (
-    session.harness === "opencode" &&
-    extractProviderAndModel(session.model).provider === OPENCODE_BEDROCK_PROVIDER
-  ) {
+  if (session.harness === "opencode" && isOpenCodeBedrockModel(session.model)) {
     return { AWS_REGION: config.region, AWS_BEARER_TOKEN_BEDROCK: await mint() };
   }
 

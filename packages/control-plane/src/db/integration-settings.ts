@@ -33,7 +33,7 @@ import {
   isValidHarnessReasoningEffort,
   type HarnessId,
 } from "@open-inspect/shared/harnesses";
-import { isValidModel } from "@open-inspect/shared/models";
+import { isValidModel, normalizeModelId } from "@open-inspect/shared/models";
 import { normalizeSandboxSettings } from "../sandbox/settings";
 import type { SqlDatabase } from "./sql-database";
 
@@ -492,18 +492,18 @@ export class IntegrationSettingsStore {
   ): GitHubBotSettings {
     this.validateAgentSelection(settings, level);
 
-    if (settings.reviewers !== undefined) {
-      const models = new Set<string>();
-      for (const reviewer of settings.reviewers) {
-        this.validateAgentSelection(reviewer, level);
-        if (models.has(reviewer.model)) {
-          throw new IntegrationSettingsValidationError(
-            `Reviewer model ${reviewer.model} is listed more than once`
-          );
-        }
-        models.add(reviewer.model);
+    // Store canonical model IDs so "claude-x" and "anthropic/claude-x" count as one reviewer.
+    const reviewers = settings.reviewers?.map((reviewer) => {
+      this.validateAgentSelection(reviewer, level);
+      return { ...reviewer, model: normalizeModelId(reviewer.model) };
+    });
+    reviewers?.forEach((reviewer, index) => {
+      if (reviewers.findIndex((other) => other.model === reviewer.model) !== index) {
+        throw new IntegrationSettingsValidationError(
+          `Reviewer model ${reviewer.model} is listed more than once`
+        );
       }
-    }
+    });
 
     if (
       settings.codeReviewInstructions !== undefined &&
@@ -519,7 +519,7 @@ export class IntegrationSettingsStore {
       throw new IntegrationSettingsValidationError("commentActionInstructions must be a string");
     }
 
-    let normalized = settings;
+    let normalized = reviewers ? { ...settings, reviewers } : settings;
 
     if (settings.allowedTriggerUsers !== undefined) {
       if (
@@ -531,7 +531,7 @@ export class IntegrationSettingsStore {
         );
       }
       normalized = {
-        ...settings,
+        ...normalized,
         allowedTriggerUsers: settings.allowedTriggerUsers.map((u) => u.trim().toLowerCase()),
       };
     }

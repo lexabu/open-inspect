@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { mintBedrockApiKey } from "@open-inspect/shared/bedrock-api-key";
-import { bedrockSandboxEnv, type BedrockSandboxConfig } from "./bedrock-env";
+import {
+  bedrockModelUnavailableReason,
+  bedrockSandboxEnv,
+  type BedrockSandboxConfig,
+} from "./bedrock-env";
 
 const CONFIG: BedrockSandboxConfig = {
   accessKey: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret" },
@@ -79,5 +83,39 @@ describe("bedrockSandboxEnv", () => {
     await expect(
       bedrockSandboxEnv(config, { harness, model, providerAuthModes: modes }, NOW)
     ).resolves.toEqual({});
+  });
+});
+
+describe("bedrockModelUnavailableReason", () => {
+  const BEDROCK_SESSION = { harness: "opencode" as const, model: BEDROCK_GPT };
+
+  it("allows a Bedrock model in a session that launched on Bedrock", () => {
+    expect(bedrockModelUnavailableReason(CONFIG, BEDROCK_SESSION, BEDROCK_GPT)).toBeNull();
+  });
+
+  it("ignores models that are not on Bedrock", () => {
+    expect(
+      bedrockModelUnavailableReason(
+        null,
+        { harness: "opencode", model: CLAUDE_MODEL },
+        CLAUDE_MODEL
+      )
+    ).toBeNull();
+  });
+
+  it("refuses a Bedrock model when the deployment has no Bedrock configuration", () => {
+    expect(bedrockModelUnavailableReason(null, BEDROCK_SESSION, BEDROCK_GPT)).toMatch(
+      /not configured/
+    );
+  });
+
+  it("refuses a switch to a Bedrock model in a session that launched without a key", () => {
+    expect(
+      bedrockModelUnavailableReason(
+        CONFIG,
+        { harness: "opencode", model: CLAUDE_MODEL },
+        BEDROCK_GPT
+      )
+    ).toMatch(/Start a new session/);
   });
 });

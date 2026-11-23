@@ -278,6 +278,8 @@ function RepoOverrideRow({
       settings.commentActionInstructions = commentActionInstructions;
     if (autoReviewMode === "override") settings.autoReviewOnOpen = autoReviewOnOpen;
     if (autofixMode === "override") settings.autofix = autofixOverrides;
+    // The form does not edit reviewers yet; keep any list set through the API.
+    if (entry.settings.reviewers) settings.reviewers = entry.settings.reviewers;
 
     try {
       const res = await browserApiFetch(

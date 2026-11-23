@@ -31,7 +31,11 @@ import {
 import { ModelProviderAccountStore } from "../db/model-provider-accounts";
 import type { SqlDatabase } from "../db/sql-database";
 import type { HarnessId } from "@open-inspect/shared/harnesses";
-import { bedrockSandboxEnv, type BedrockSandboxConfig } from "../sandbox/bedrock-env";
+import {
+  bedrockModelUnavailableReason,
+  bedrockSandboxEnv,
+  type BedrockSandboxConfig,
+} from "../sandbox/bedrock-env";
 import type { Logger } from "../logger";
 import { resolvePublicSessionId } from "./public-session-id";
 import { buildSessionTargetSecretSources } from "./session-target-secrets";
@@ -118,6 +122,8 @@ export class UserEnvResolver {
   async getProviderAuthenticationError(model: string): Promise<string | null> {
     const context = await this.loadUserEnvContext();
     if (!context) return null;
+    const bedrockIssue = bedrockModelUnavailableReason(this.bedrock, context, model);
+    if (bedrockIssue) return bedrockIssue;
     const accountIssue = await this.checkBoundAccount(model, context);
     if (accountIssue) return accountIssue;
     const issue = resolveProviderAuthenticationError(

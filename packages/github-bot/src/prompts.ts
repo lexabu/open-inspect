@@ -81,10 +81,15 @@ export function buildCodeReviewPrompt(params: {
     isSelfReview = false,
     reviewer = null,
   } = params;
-  const reviewEvent = isSelfReview ? "COMMENT" : "<APPROVE, REQUEST_CHANGES, or COMMENT>";
+  // Reviewers share one GitHub App identity, so a later APPROVE would clear an
+  // earlier REQUEST_CHANGES; with several reviewers each one only comments.
+  const commentOnly = isSelfReview || reviewer !== null;
+  const reviewEvent = commentOnly ? "COMMENT" : "<APPROVE, REQUEST_CHANGES, or COMMENT>";
   const reviewEventGuidance = isSelfReview
     ? "Use COMMENT because GitHub does not allow pull request authors to approve their own PRs."
-    : "Use APPROVE if the code looks good, REQUEST_CHANGES if changes are needed,\n   or COMMENT for general feedback.";
+    : reviewer
+      ? "Use COMMENT: you are one of several reviewers sharing one GitHub identity, so state your\n   verdict (approve or request changes) in the first lines of the review body instead."
+      : "Use APPROVE if the code looks good, REQUEST_CHANGES if changes are needed,\n   or COMMENT for general feedback.";
   const repositoryPath = encodeRepositoryPathSegments({ repoOwner: owner, repoName: repo });
 
   const prTitleBlock = buildUntrustedUserContentBlock({

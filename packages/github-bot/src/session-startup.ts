@@ -336,11 +336,20 @@ export async function startSession(
       }
       if (failedModels.length > 0) {
         // Some reviewers started; say which did not so the PR never looks fully reviewed.
+        // Best effort: throwing here would make a redelivery restart the reviewers that ran.
         const names = failedModels.map((model) => `\`${getModelDisplayName(model)}\``).join(", ");
-        await postRequiredComment(
+        const posted = await postIssueComment(
+          ghToken,
+          commentsUrl,
           `I couldn't start the ${names} review, so this PR has ${sessions.length} of ${reviewerCount} reviews. Request a review again to retry.`,
-          "reviewer_launch_failed"
+          userAgent
         );
+        if (!posted) {
+          log.error("session.reviewer_failure_notice_failed", {
+            ...meta,
+            failed_models: failedModels,
+          });
+        }
       }
       return { outcome: "processed", sessions, handler_action: action };
     }
