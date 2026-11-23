@@ -514,6 +514,57 @@ describe("IntegrationSettingsStore", () => {
       expect(result?.codeReviewInstructions).toBe("Focus on security.");
     });
 
+    it("stores reviewers on different providers and resolves them", async () => {
+      const reviewers = [
+        { model: "anthropic/claude-opus-4-5", harness: "claude" as const },
+        {
+          model: "amazon-bedrock/openai.gpt-6.2-sol",
+          harness: "opencode" as const,
+          reasoningEffort: "high",
+        },
+      ];
+      await store.setRepoSettings("github", "acme/widgets", { reviewers });
+
+      const config = await store.getResolvedConfig("github", "acme/widgets");
+      expect(config.settings.reviewers).toEqual(reviewers);
+    });
+
+    it.each([
+      {
+        label: "an unknown model",
+        reviewers: [{ model: "openai/not-a-model", harness: "opencode" as const }],
+        error: "Invalid model ID",
+      },
+      {
+        label: "a model its harness cannot run",
+        reviewers: [{ model: "amazon-bedrock/openai.gpt-6.2-sol", harness: "claude" as const }],
+        error: IntegrationSettingsValidationError,
+      },
+      {
+        label: "an invalid reasoning effort",
+        reviewers: [
+          {
+            model: "amazon-bedrock/openai.gpt-6.2-sol",
+            harness: "opencode" as const,
+            reasoningEffort: "none",
+          },
+        ],
+        error: IntegrationSettingsValidationError,
+      },
+      {
+        label: "the same model twice",
+        reviewers: [
+          { model: "anthropic/claude-opus-4-5", harness: "claude" as const },
+          { model: "anthropic/claude-opus-4-5", harness: "opencode" as const },
+        ],
+        error: "listed more than once",
+      },
+    ])("rejects reviewers with $label", async ({ reviewers, error }) => {
+      await expect(store.setRepoSettings("github", "acme/widgets", { reviewers })).rejects.toThrow(
+        error
+      );
+    });
+
     it("rejects non-string codeReviewInstructions", async () => {
       await expect(
         store.setRepoSettings("github", "acme/widgets", {

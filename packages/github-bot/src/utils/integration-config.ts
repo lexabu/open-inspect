@@ -7,11 +7,14 @@ import { signedControlPlaneFetch } from "../internal-auth";
 import type { Logger } from "../logger";
 import { z } from "zod";
 import { DEFAULT_HARNESS, harnessIdSchema, type HarnessId } from "@open-inspect/shared/harnesses";
+import { githubReviewerSchema, type GitHubReviewer } from "@open-inspect/shared/types/integrations";
 
 export interface ResolvedGitHubConfig {
   model: string;
   harness: HarnessId;
   reasoningEffort: string | null;
+  /** Independent reviewers for review requests; null reviews with the single selection. */
+  reviewers: GitHubReviewer[] | null;
   autoReviewOnOpen: boolean;
   enabledRepos: string[] | null;
   allowedTriggerUsers: string[] | null;
@@ -26,6 +29,8 @@ const resolvedGitHubConfigResponseSchema = z.object({
       // Control planes that predate the harness setting omit it.
       harness: harnessIdSchema.default(DEFAULT_HARNESS),
       reasoningEffort: z.string().nullable(),
+      // Control planes that predate reviewer lists omit it.
+      reviewers: z.array(githubReviewerSchema).nullable().default(null),
       autoReviewOnOpen: z.boolean(),
       enabledRepos: z.array(z.string()).nullable(),
       allowedTriggerUsers: z.array(z.string()).nullable(),
@@ -38,6 +43,7 @@ const resolvedGitHubConfigResponseSchema = z.object({
 const FAIL_CLOSED: Omit<ResolvedGitHubConfig, "model"> = {
   harness: DEFAULT_HARNESS,
   reasoningEffort: null,
+  reviewers: null,
   autoReviewOnOpen: false,
   enabledRepos: [],
   allowedTriggerUsers: [],
@@ -105,6 +111,7 @@ export async function getGitHubConfig(
       model: env.DEFAULT_MODEL,
       harness: DEFAULT_HARNESS,
       reasoningEffort: null,
+      reviewers: null,
       autoReviewOnOpen: true,
       enabledRepos: null,
       allowedTriggerUsers: null,
@@ -117,6 +124,7 @@ export async function getGitHubConfig(
     model: data.config.model ?? env.DEFAULT_MODEL,
     harness: data.config.harness,
     reasoningEffort: data.config.reasoningEffort,
+    reviewers: data.config.reviewers,
     autoReviewOnOpen: data.config.autoReviewOnOpen,
     enabledRepos: data.config.enabledRepos,
     allowedTriggerUsers: data.config.allowedTriggerUsers,

@@ -504,6 +504,27 @@ export const MODEL_CATALOG = [
       { id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", description: "Most capable" },
     ],
   },
+  {
+    // OpenCode runs these on the deployment's Bedrock through the short-term key
+    // the control plane mints per launch (see sandbox/bedrock-env.ts); no OpenAI
+    // key or account is involved.
+    category: "Amazon Bedrock",
+    enabledByDefault: false,
+    models: [
+      {
+        id: "amazon-bedrock/openai.gpt-6.2-sol",
+        name: "GPT-6.2 Sol (Bedrock)",
+        description: "OpenAI on Amazon Bedrock",
+        reasoning: { efforts: ["low", "medium", "high", "xhigh", "max"], default: "medium" },
+      },
+      {
+        id: "amazon-bedrock/openai.gpt-6.2-astra",
+        name: "GPT-6.2 Astra (Bedrock)",
+        description: "OpenAI on Amazon Bedrock",
+        reasoning: { efforts: ["low", "medium", "high", "xhigh", "max"], default: "medium" },
+      },
+    ],
+  },
 ] as const satisfies readonly ModelCatalogGroup[];
 
 export type ValidModel = (typeof MODEL_CATALOG)[number]["models"][number]["id"];

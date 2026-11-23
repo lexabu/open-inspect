@@ -41,9 +41,9 @@ MAX_PENDING_PART_EVENTS: Final = 2000
 CONTEXT_OVERFLOW_ERROR_NAME: Final = "ContextOverflowError"
 # Providers whose models take the requested reasoning effort as an OpenCode
 # variant. OpenCode Zen and Go route each model to its own SDK, but OpenCode
-# derives the variants from the catalog either way.
+# derives the variants from the catalog either way, including Amazon Bedrock.
 VARIANT_REASONING_PROVIDERS: Final = frozenset(
-    {"anthropic", "openai", "xai", "opencode", "opencode-go"}
+    {"anthropic", "openai", "xai", "opencode", "opencode-go", "amazon-bedrock"}
 )
 
 OPENCODE_DEFAULT_TITLE_RE: Final = re.compile(

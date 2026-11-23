@@ -53,7 +53,7 @@ export async function handleReviewRequested(
     title: `GitHub: Review PR #${pr.number}`,
     action: "review",
     reactionPath: `issues/${pr.number}`,
-    buildPrompt: (config) =>
+    buildPrompt: (config, reviewer) =>
       buildCodeReviewPrompt({
         owner: repo.owner.login,
         repo: repo.name,
@@ -66,6 +66,7 @@ export async function handleReviewRequested(
         isPublic: !repo.private,
         codeReviewInstructions: config.codeReviewInstructions,
         isSelfReview: isAuthoredByBot(pr, env),
+        reviewer,
       }),
   });
 }
@@ -90,7 +91,7 @@ export async function handlePullRequestOpened(
     title: `GitHub: Review PR #${pr.number}`,
     action: "auto_review",
     reactionPath: `issues/${pr.number}`,
-    buildPrompt: (config) =>
+    buildPrompt: (config, reviewer) =>
       buildCodeReviewPrompt({
         owner: repo.owner.login,
         repo: repo.name,
@@ -103,6 +104,7 @@ export async function handlePullRequestOpened(
         isPublic: !repo.private,
         codeReviewInstructions: config.codeReviewInstructions,
         isSelfReview: isAuthoredByBot(pr, env),
+        reviewer,
       }),
   });
 }

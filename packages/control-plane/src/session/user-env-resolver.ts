@@ -2,7 +2,7 @@
  * Resolves the user-defined environment a session's sandbox receives: decrypts
  * and folds global/team/repo/environment secrets, derives the managed-provider env
  * from the session's provider auth modes, adds a freshly minted Bedrock key for
- * Claude Agent API-key sessions when the deployment configures Bedrock, and
+ * sessions that run on Bedrock when the deployment configures it, and
  * answers whether a model's provider has usable authentication in that
  * environment. Legacy session rows
  * that predate `repo_id` resolve it through the injected `resolveRepoId`
@@ -31,7 +31,7 @@ import {
 import { ModelProviderAccountStore } from "../db/model-provider-accounts";
 import type { SqlDatabase } from "../db/sql-database";
 import type { HarnessId } from "@open-inspect/shared/harnesses";
-import { claudeBedrockEnv, type BedrockSandboxConfig } from "../sandbox/bedrock-env";
+import { bedrockSandboxEnv, type BedrockSandboxConfig } from "../sandbox/bedrock-env";
 import type { Logger } from "../logger";
 import { resolvePublicSessionId } from "./public-session-id";
 import { buildSessionTargetSecretSources } from "./session-target-secrets";
@@ -63,6 +63,8 @@ export interface UserEnvResolverDeps {
 
 interface UserEnvContext {
   harness: HarnessId;
+  /** The session model; an OpenCode session on a Bedrock model needs a Bedrock key. */
+  model: string;
   sandboxEnv: Record<string, string>;
   providerAuthModes: Record<SubscriptionProviderId, SessionProviderAuthMode>;
   /** Bound account per provider in provider_account mode. */
@@ -98,7 +100,7 @@ export class UserEnvResolver {
   async getUserEnvVars(): Promise<Record<string, string> | undefined> {
     const context = await this.loadUserEnvContext();
     if (!context) return undefined;
-    const bedrockEnv = await claudeBedrockEnv(this.bedrock, context);
+    const bedrockEnv = await bedrockSandboxEnv(this.bedrock, context);
     if (Object.keys(bedrockEnv).length > 0) {
       this.log.info("Bedrock key minted for sandbox", {
         event: "sandbox.bedrock_key_minted",
@@ -242,7 +244,13 @@ export class UserEnvResolver {
       brokerSecrets: managedSecrets,
       providerAuthModes,
     });
-    return { harness: session.harness, sandboxEnv, providerAuthModes, providerAccountIds };
+    return {
+      harness: session.harness,
+      model: session.model,
+      sandboxEnv,
+      providerAuthModes,
+      providerAccountIds,
+    };
   }
 
   /**

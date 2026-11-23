@@ -13,12 +13,23 @@ import {
 import { resolveSessionTarget } from "./session-target";
 import { createSession, sendPrompt } from "./session-client";
 import { getGitHubConfig, type ResolvedGitHubConfig } from "./utils/integration-config";
-import { resolveModelSelection } from "./model-selection";
+import { resolveModelSelection, type ModelSelection } from "./model-selection";
+import type { ReviewerContext } from "./prompts";
+import { getModelDisplayName } from "@open-inspect/shared/models";
 import type { ParseInlinePromptFlagsResult } from "@open-inspect/shared/inline-prompt-flags";
 
+/** One started session; a multi-reviewer review starts one per reviewer. */
+interface LaunchedSession {
+  session_id: string;
+  message_id: string;
+  model: string;
+}
+
 export type HandlerResult =
-  | { outcome: "processed"; session_id: string; message_id: string; handler_action: string }
+  | { outcome: "processed"; sessions: LaunchedSession[]; handler_action: string }
   | { outcome: "skipped"; skip_reason: string };
+
+type SessionAction = "review" | "auto_review" | "comment" | "review_comment";
 
 const githubRouteResponseSchema = z.discriminatedUnion("via", [
   z.object({ via: z.literal("workspace"), teamId: z.null() }),
@@ -146,11 +157,11 @@ export async function startSession(
     sender: ReviewRequestedPayload["sender"];
     pullNumber: number;
     title: string;
-    action: "review" | "auto_review" | "comment" | "review_comment";
+    action: SessionAction;
     reactionPath: string;
     /** `!model` / `!reasoning` flags parsed from the triggering comment, if any. */
     inlineFlags?: ParseInlinePromptFlagsResult;
-    buildPrompt: (config: ResolvedGitHubConfig) => string;
+    buildPrompt: (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string;
   }
 ): Promise<HandlerResult> {
   const { repository: repo, sender, pullNumber, action } = params;
@@ -184,28 +195,32 @@ export async function startSession(
   const userAgent = resolveAppName(env);
   const meta = { trace_id: traceId, repo: repoFullName, pull_number: pullNumber };
 
-  const modelSelection = await resolveModelSelection(
-    env,
-    log,
-    traceId,
-    { model: config.model, harness: config.harness, reasoningEffort: config.reasoningEffort },
-    params.inlineFlags
-  );
-  if (!modelSelection.ok) {
-    const posted = await postIssueComment(
-      ghToken,
-      `https://api.github.com/repos/${repositoryPath}/issues/${pullNumber}/comments`,
-      modelSelection.message,
-      userAgent
+  const commentsUrl = `https://api.github.com/repos/${repositoryPath}/issues/${pullNumber}/comments`;
+  const postRequiredComment = async (body: string, code: string): Promise<void> => {
+    if (await postIssueComment(ghToken, commentsUrl, body, userAgent)) return;
+    log.warn("session.refusal_comment_failed", { ...meta, code });
+    throw new Error(`Session refusal comment failed: ${code}`);
+  };
+
+  const selections: ModelSelection[] = [];
+  let inlineModelOverride = false;
+  for (const requested of requestedSelections(action, config)) {
+    const modelSelection = await resolveModelSelection(
+      env,
+      log,
+      traceId,
+      requested,
+      params.inlineFlags
     );
-    if (!posted) {
-      log.warn("session.refusal_comment_failed", { ...meta, code: modelSelection.reason });
-      throw new Error(`Session refusal comment failed: ${modelSelection.reason}`);
+    if (!modelSelection.ok) {
+      await postRequiredComment(modelSelection.message, modelSelection.reason);
+      log.info("handler.inline_flags_rejected", { ...meta, reason: modelSelection.reason });
+      return { outcome: "skipped", skip_reason: modelSelection.reason };
     }
-    log.info("handler.inline_flags_rejected", { ...meta, reason: modelSelection.reason });
-    return { outcome: "skipped", skip_reason: modelSelection.reason };
+    inlineModelOverride ||= modelSelection.overridden;
+    selections.push(modelSelection.selection);
   }
-  const { selection } = modelSelection;
+  const reviewerCount = selections.length;
 
   return withReaction(
     log,
@@ -235,78 +250,141 @@ export async function startSession(
         ghToken,
         traceId,
       });
-      const creation = await createSession(env, traceId, {
-        target,
-        teamId,
-        title: params.title,
-        model: selection.model,
-        harness: selection.harness,
-        reasoningEffort: selection.reasoningEffort,
-        scmLogin: sender.login,
-        scmUserId: String(sender.id),
-        scmAvatarUrl: sender.avatar_url,
-      });
-      if (!creation.ok) {
-        const { status, code, body } = creation;
-        if (
-          (status === 403 && code === "not_member") ||
-          (status === 409 && (code === "target_team_missing_grant" || code === "team_archived"))
-        ) {
-          // A PR comment must not disclose secondary repositories from the environment.
-          const triggerRepo = `${owner}/${repoName}`;
-          const comment = {
-            not_member:
-              "I couldn't start a session because you are not a member of the target team. Ask a team lead to add you, then try again.",
-            target_team_missing_grant: `I couldn't start a session because the target team is missing a required repository grant to work on \`${triggerRepo}\`. Ask a team lead or workspace administrator to review the team's repository and environment grants, then try again.`,
-            team_archived:
-              "I couldn't start a session because the target team is archived. Ask a workspace administrator to restore the team, then try again.",
-          }[code];
-          const posted = await postIssueComment(
-            ghToken,
-            `https://api.github.com/repos/${repositoryPath}/issues/${pullNumber}/comments`,
-            comment,
-            userAgent
-          );
-          if (!posted) {
-            log.warn("session.refusal_comment_failed", {
-              trace_id: traceId,
-              repo: triggerRepo,
-              code,
-            });
-            throw new Error(`Session refusal comment failed: ${code}`);
-          }
-          return { outcome: "skipped", skip_reason: code };
-        }
-        throw new Error(`Session creation failed: ${status} ${body}`);
-      }
-      const { sessionId } = creation;
-      log.info("session.created", {
-        ...meta,
-        session_id: sessionId,
-        action,
-        model: selection.model,
-        reasoning_effort: selection.reasoningEffort,
-        inline_model_override: modelSelection.overridden,
-      });
 
-      const prompt = params.buildPrompt(config);
-      const messageId = await sendPrompt(env, traceId, sessionId, {
-        content: prompt,
-        authorId: `github:${sender.id}`,
-      });
-      log.info("prompt.sent", {
-        ...meta,
-        session_id: sessionId,
-        message_id: messageId,
-        source: "github",
-        content_length: prompt.length,
-      });
-      return {
-        outcome: "processed",
-        session_id: sessionId,
-        message_id: messageId,
-        handler_action: action,
+      const launch = async (selection: ModelSelection): Promise<LaunchOutcome> => {
+        const modelName = getModelDisplayName(selection.model);
+        const creation = await createSession(env, traceId, {
+          target,
+          teamId,
+          title: reviewerCount > 1 ? `${params.title} (${modelName})` : params.title,
+          model: selection.model,
+          harness: selection.harness,
+          reasoningEffort: selection.reasoningEffort,
+          scmLogin: sender.login,
+          scmUserId: String(sender.id),
+          scmAvatarUrl: sender.avatar_url,
+        });
+        if (!creation.ok) {
+          const { status, code, body } = creation;
+          if (isRefusal(status, code)) return { kind: "refused", code };
+          throw new Error(`Session creation failed: ${status} ${body}`);
+        }
+        const { sessionId } = creation;
+        log.info("session.created", {
+          ...meta,
+          session_id: sessionId,
+          action,
+          model: selection.model,
+          harness: selection.harness,
+          reasoning_effort: selection.reasoningEffort,
+          inline_model_override: inlineModelOverride,
+          reviewer_count: reviewerCount,
+        });
+
+        const prompt = params.buildPrompt(
+          config,
+          reviewerCount > 1 ? { modelName, reviewerCount } : null
+        );
+        const messageId = await sendPrompt(env, traceId, sessionId, {
+          content: prompt,
+          authorId: `github:${sender.id}`,
+        });
+        log.info("prompt.sent", {
+          ...meta,
+          session_id: sessionId,
+          message_id: messageId,
+          source: "github",
+          content_length: prompt.length,
+        });
+        return {
+          kind: "launched",
+          session: { session_id: sessionId, message_id: messageId, model: selection.model },
+        };
       };
+
+      const outcomes = await Promise.allSettled(selections.map(launch));
+      const sessions: LaunchedSession[] = [];
+      const failedModels: string[] = [];
+      let refusal: RefusalCode | null = null;
+      let firstError: unknown = null;
+      for (const [index, outcome] of outcomes.entries()) {
+        const { model } = selections[index];
+        if (outcome.status === "rejected") {
+          failedModels.push(model);
+          firstError ??= outcome.reason;
+          log.error("session.reviewer_launch_failed", {
+            ...meta,
+            model,
+            error:
+              outcome.reason instanceof Error ? outcome.reason : new Error(String(outcome.reason)),
+          });
+        } else if (outcome.value.kind === "refused") {
+          failedModels.push(model);
+          refusal ??= outcome.value.code;
+        } else {
+          sessions.push(outcome.value.session);
+        }
+      }
+
+      if (sessions.length === 0) {
+        if (refusal) {
+          // A PR comment must not disclose secondary repositories from the environment.
+          await postRequiredComment(refusalComment(refusal, `${owner}/${repoName}`), refusal);
+          return { outcome: "skipped", skip_reason: refusal };
+        }
+        throw firstError instanceof Error ? firstError : new Error(String(firstError));
+      }
+      if (failedModels.length > 0) {
+        // Some reviewers started; say which did not so the PR never looks fully reviewed.
+        const names = failedModels.map((model) => `\`${getModelDisplayName(model)}\``).join(", ");
+        await postRequiredComment(
+          `I couldn't start the ${names} review, so this PR has ${sessions.length} of ${reviewerCount} reviews. Request a review again to retry.`,
+          "reviewer_launch_failed"
+        );
+      }
+      return { outcome: "processed", sessions, handler_action: action };
     }
   );
+}
+
+type RefusalCode = "not_member" | "target_team_missing_grant" | "team_archived";
+
+type LaunchOutcome =
+  { kind: "launched"; session: LaunchedSession } | { kind: "refused"; code: RefusalCode };
+
+function isRefusal(status: number, code: string | undefined): code is RefusalCode {
+  return (
+    (status === 403 && code === "not_member") ||
+    (status === 409 && (code === "target_team_missing_grant" || code === "team_archived"))
+  );
+}
+
+function refusalComment(code: RefusalCode, triggerRepo: string): string {
+  return {
+    not_member:
+      "I couldn't start a session because you are not a member of the target team. Ask a team lead to add you, then try again.",
+    target_team_missing_grant: `I couldn't start a session because the target team is missing a required repository grant to work on \`${triggerRepo}\`. Ask a team lead or workspace administrator to review the team's repository and environment grants, then try again.`,
+    team_archived:
+      "I couldn't start a session because the target team is archived. Ask a workspace administrator to restore the team, then try again.",
+  }[code];
+}
+
+/**
+ * The model selections a trigger starts sessions for: every configured reviewer
+ * for a review request or auto-review, otherwise the single configured selection.
+ */
+function requestedSelections(
+  action: SessionAction,
+  config: ResolvedGitHubConfig
+): ModelSelection[] {
+  if ((action === "review" || action === "auto_review") && config.reviewers) {
+    return config.reviewers.map((reviewer) => ({
+      model: reviewer.model,
+      harness: reviewer.harness,
+      reasoningEffort: reviewer.reasoningEffort ?? null,
+    }));
+  }
+  return [
+    { model: config.model, harness: config.harness, reasoningEffort: config.reasoningEffort },
+  ];
 }

@@ -215,6 +215,15 @@ Runs on OpenCode only. Opt-in group. Credential: `DEEPSEEK_API_KEY` as a global 
 | `deepseek/deepseek-v4-flash` | DeepSeek V4 Flash | Not supported     | N/A            |
 | `deepseek/deepseek-v4-pro`   | DeepSeek V4 Pro   | Not supported     | N/A            |
 
+### Amazon Bedrock
+
+Runs on OpenCode only. Opt-in group. Credential: the deployment's Bedrock configuration; each sandbox launch gets a 12-hour Bedrock-only key, so no OpenAI key is needed.
+
+| Model ID                              | Display name            | Reasoning efforts             | Default effort |
+| ------------------------------------- | ----------------------- | ----------------------------- | -------------- |
+| `amazon-bedrock/openai.gpt-6.2-sol`   | GPT-6.2 Sol (Bedrock)   | low, medium, high, xhigh, max | medium         |
+| `amazon-bedrock/openai.gpt-6.2-astra` | GPT-6.2 Astra (Bedrock) | low, medium, high, xhigh, max | medium         |
+
 ## The same model behind several gateways
 
 Some models appear more than once because they are reachable through more than one provider, each billed differently. `opencode-go/grok-4.6` and `xai/grok-4.6` are the same Grok model behind two gateways. `opencode-go/glm-5.2`, `opencode/glm-5.2`, and `zai-coding-plan/glm-5.2` are the same GLM model behind three. `opencode/gemini-4-argon` and `opencode-go/gemini-4-argon` are the same Gemini model on Zen and Go: one `OPENCODE_API_KEY` serves both, billed per token on Zen and against the subscription allowance on Go. Pick the entry whose billing you want.

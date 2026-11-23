@@ -202,3 +202,14 @@ DeepSeek models require `DEEPSEEK_API_KEY` as a global or repository secret.
 | ---------------------------- | ----------------- | ------------ | ----------------- | -------------- |
 | `deepseek/deepseek-v4-flash` | DeepSeek V4 Flash | Fast model   | Not supported     | N/A            |
 | `deepseek/deepseek-v4-pro`   | DeepSeek V4 Pro   | Most capable | Not supported     | N/A            |
+
+## Amazon Bedrock
+
+Amazon Bedrock models run on OpenCode with the deployment's Bedrock configuration
+(`BEDROCK_AWS_ACCESS_KEY_ID`, `BEDROCK_AWS_SECRET_ACCESS_KEY`, `BEDROCK_AWS_REGION`). The control
+plane mints a 12-hour Bedrock-only key for each sandbox launch; no OpenAI key is needed.
+
+| Model ID                              | Display name            | Description              | Reasoning efforts             | Default effort |
+| ------------------------------------- | ----------------------- | ------------------------ | ----------------------------- | -------------- |
+| `amazon-bedrock/openai.gpt-6.2-sol`   | GPT-6.2 Sol (Bedrock)   | OpenAI on Amazon Bedrock | low, medium, high, xhigh, max | medium         |
+| `amazon-bedrock/openai.gpt-6.2-astra` | GPT-6.2 Astra (Bedrock) | OpenAI on Amazon Bedrock | low, medium, high, xhigh, max | medium         |

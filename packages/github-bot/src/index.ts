@@ -247,8 +247,9 @@ async function handleWebhook(
     if (result.outcome === "skipped") {
       wideEvent.skip_reason = result.skip_reason;
     } else {
-      wideEvent.session_id = result.session_id;
-      wideEvent.message_id = result.message_id;
+      wideEvent.session_ids = result.sessions.map((session) => session.session_id);
+      wideEvent.message_ids = result.sessions.map((session) => session.message_id);
+      wideEvent.models = result.sessions.map((session) => session.model);
       wideEvent.handler_action = result.handler_action;
     }
     log.info("webhook.handled", wideEvent);

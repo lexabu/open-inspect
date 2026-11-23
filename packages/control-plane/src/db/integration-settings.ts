@@ -492,6 +492,19 @@ export class IntegrationSettingsStore {
   ): GitHubBotSettings {
     this.validateAgentSelection(settings, level);
 
+    if (settings.reviewers !== undefined) {
+      const models = new Set<string>();
+      for (const reviewer of settings.reviewers) {
+        this.validateAgentSelection(reviewer, level);
+        if (models.has(reviewer.model)) {
+          throw new IntegrationSettingsValidationError(
+            `Reviewer model ${reviewer.model} is listed more than once`
+          );
+        }
+        models.add(reviewer.model);
+      }
+    }
+
     if (
       settings.codeReviewInstructions !== undefined &&
       typeof settings.codeReviewInstructions !== "string"
