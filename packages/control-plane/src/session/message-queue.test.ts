@@ -558,6 +558,38 @@ describe("SessionMessageQueue", () => {
     expect(h.repository.createMessageWithAttachments).not.toHaveBeenCalled();
   });
 
+  it("queues an unknown Bedrock-looking override on the session model without a Bedrock check", async () => {
+    const h = buildQueue();
+    await h.queue.enqueuePromptFromApi({
+      content: "next",
+      authorId: "user-1",
+      source: "agent",
+      model: "amazon-bedrock/not-a-model",
+    });
+    expect(h.getProviderAuthenticationError).not.toHaveBeenCalled();
+    expect(h.repository.createMessageWithAttachments).toHaveBeenCalled();
+  });
+
+  it("checks the Bedrock session model when an unknown override falls back to it", async () => {
+    const h = buildQueue();
+    h.repository.getSession.mockReturnValue(
+      createSession({ model: "amazon-bedrock/openai.gpt-6.2-sol" })
+    );
+    h.getProviderAuthenticationError.mockResolvedValue("Amazon Bedrock is not configured.");
+    await expect(
+      h.queue.enqueuePromptFromApi({
+        content: "next",
+        authorId: "user-1",
+        source: "agent",
+        model: "openai/not-a-model",
+      })
+    ).rejects.toThrow("not configured");
+    expect(h.getProviderAuthenticationError).toHaveBeenCalledWith(
+      "amazon-bedrock/openai.gpt-6.2-sol"
+    );
+    expect(h.repository.createMessageWithAttachments).not.toHaveBeenCalled();
+  });
+
   it("rejects new websocket and API prompts during a failed safety hold", async () => {
     const h = buildQueue(
       () => false,

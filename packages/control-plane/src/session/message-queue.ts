@@ -913,10 +913,16 @@ export class SessionMessageQueue {
     const session = this.repository.getSession();
     const harness = getValidHarnessOrDefault(session?.harness);
     const strictSelection = getHarnessCapabilities(harness).selectionPolicy === "strict";
-    const effectiveModel = data.model || session?.model || DEFAULT_MODEL;
+    // Strict harnesses keep any override so compatibility rejects it; the others
+    // drop an unknown override and fall back to the session model, as dispatch does.
+    const acceptedOverride =
+      data.model && (strictSelection || isValidModel(data.model)) ? data.model : null;
+    const admissionModel = strictSelection
+      ? data.model || session?.model || DEFAULT_MODEL
+      : resolveHarnessModel(harness, acceptedOverride || session?.model);
     // A Bedrock model needs the key minted at sandbox launch, so check it before
     // queueing on any harness rather than failing the prompt at dispatch.
-    const checkBeforeQueue = strictSelection || isOpenCodeBedrockModel(effectiveModel);
+    const checkBeforeQueue = strictSelection || isOpenCodeBedrockModel(admissionModel);
     let requestFingerprint: string | undefined;
     if (data.clientRequestId) {
       requestFingerprint = await fingerprintWebPrompt(data.participant.id, data);
@@ -926,7 +932,7 @@ export class SessionMessageQueue {
       // mutable model/auth policy is consulted: it is not new work.
       const duplicate = this.findDuplicatePrompt(data, requestFingerprint);
       if (duplicate) return duplicate;
-      const modelError = await this.getProviderAuthenticationError(effectiveModel);
+      const modelError = await this.getProviderAuthenticationError(admissionModel);
       if (modelError) throw new HarnessModelIncompatibleError(modelError);
     }
 
@@ -952,15 +958,9 @@ export class SessionMessageQueue {
     const messageId = generateId();
     const now = Date.now();
 
-    let messageModel: string | null = null;
-    if (data.model) {
-      if (strictSelection || isValidModel(data.model)) {
-        // Preserve strict overrides so compatibility rejects them below,
-        // rather than silently substituting the session's model.
-        messageModel = data.model;
-      } else {
-        this.log.warn("Invalid message model, ignoring override", { model: data.model });
-      }
+    const messageModel = acceptedOverride;
+    if (data.model && !acceptedOverride) {
+      this.log.warn("Invalid message model, ignoring override", { model: data.model });
     }
 
     const effectiveModelForEffort =
