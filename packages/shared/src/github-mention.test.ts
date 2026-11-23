@@ -16,6 +16,7 @@ describe("containsBotMention", () => {
     "@nativepath-ai[^1] please look",
     "a ~~~ b\n@nativepath-ai please look",
     "````\n```\n@nativepath-ai in code\n````\n@nativepath-ai after the block",
+    "a stray ` here\n\n@nativepath-ai please look\n\nanother ` there",
   ])("matches %s", (body) => {
     expect(containsBotMention(body, BOT)).toBe(true);
   });
@@ -36,6 +37,9 @@ describe("containsBotMention", () => {
     "用户@nativepath-ai.公司",
     "@nativepath-ai\u200b-other review this",
     "x\u200b@nativepath-ai review this",
+    "- step one\n  ```\n  @nativepath-ai in a listed fence\n  ```",
+    "> ~~~\n> @nativepath-ai in a quoted fence\n> ~~~",
+    "<!-- @nativepath-ai in a comment -->",
   ])("does not match %s", (body) => {
     expect(containsBotMention(body, BOT)).toBe(false);
   });
@@ -108,5 +112,22 @@ describe("isBotLogin", () => {
     expect(isBotLogin("other[bot]", BOT)).toBe(false);
     expect(isBotLogin(undefined, BOT)).toBe(false);
     expect(isBotLogin("[bot]", "[bot]")).toBe(false);
+  });
+});
+
+describe("worst-case input", () => {
+  it("parses a maximum-size comment full of unmatched backtick runs in bounded time", () => {
+    // GitHub caps comments at 65,536 characters; this body is about that size.
+    const body = `${Array.from({ length: 360 }, (_, i) => "`".repeat(i + 1)).join(" x ")} @nativepath-ai`;
+    const started = performance.now();
+    expect(containsBotMention(body, BOT)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(5000);
+  });
+
+  it("skips parsing when the handle never appears", () => {
+    const body = "`".repeat(60_000);
+    const started = performance.now();
+    expect(containsBotMention(body, BOT)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(50);
   });
 });
