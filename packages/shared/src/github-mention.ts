@@ -61,6 +61,54 @@ const HTML_CODE_CLOSE = /^<\/(code|pre|kbd|samp|tt)\s*>/i;
  */
 const MAX_PARSED_LENGTH = 10_000;
 
+/** Deeper list or quote nesting on one line than any real comment uses. */
+const MAX_CONTAINER_DEPTH = 8;
+/** More link brackets, or emphasis markers, than any real comment uses. */
+const MAX_BRACKETS = 1_000;
+const MAX_EMPHASIS_MARKERS = 2_000;
+
+/**
+ * How many list-item or block-quote markers open a line (`>`, bullets, ordered
+ * numbers). A plain loop, so long runs of markers cannot backtrack.
+ */
+function containerDepth(line: string): number {
+  let depth = 0;
+  let i = 0;
+  for (;;) {
+    while (line[i] === " " || line[i] === "\t") i++;
+    let next = -1;
+    if (line[i] === ">") next = i + 1;
+    else if ("-*+".includes(line[i] ?? "x") && /^[ \t]?$/.test(line[i + 1] ?? "")) next = i + 1;
+    else {
+      let k = i;
+      while (k < i + 9 && line[k] >= "0" && line[k] <= "9") k++;
+      if (k > i && (line[k] === "." || line[k] === ")") && /^[ \t]?$/.test(line[k + 1] ?? "")) {
+        next = k + 1;
+      }
+    }
+    if (next < 0) return depth;
+    depth++;
+    i = next;
+  }
+}
+
+/**
+ * Whether the Markdown parser runs in bounded time on this body. Its cost grows
+ * faster than the input on deep list or quote nesting, bracket runs and emphasis
+ * runs (2 s for 9,800 characters of "- "), so those shapes and long bodies take
+ * the linear fallback instead. One linear pass.
+ */
+function parseIsBounded(body: string): boolean {
+  if (body.length > MAX_PARSED_LENGTH) return false;
+  let brackets = 0;
+  let emphasis = 0;
+  for (const char of body) {
+    if (char === "[" && ++brackets > MAX_BRACKETS) return false;
+    if ((char === "*" || char === "_") && ++emphasis > MAX_EMPHASIS_MARKERS) return false;
+  }
+  return body.split("\n").every((line) => containerDepth(line) <= MAX_CONTAINER_DEPTH);
+}
+
 interface MarkdownNode {
   type: string;
   value?: string;
@@ -199,9 +247,19 @@ function fencedRanges(body: string): Array<[number, number]> {
   return ranges;
 }
 
+/** The last body segmented: a mention check is usually followed by a strip. */
+let lastSegmented: { body: string; parts: string[] } | null = null;
+
 /** Prose and code segments, alternating with prose at even indexes. */
 function segments(body: string): string[] {
-  const ranges = body.length > MAX_PARSED_LENGTH ? fencedRanges(body) : parsedCodeRanges(body);
+  if (lastSegmented?.body === body) return lastSegmented.parts;
+  const parts = computeSegments(body);
+  lastSegmented = { body, parts };
+  return parts;
+}
+
+function computeSegments(body: string): string[] {
+  const ranges = parseIsBounded(body) ? parsedCodeRanges(body) : fencedRanges(body);
   ranges.sort((x, y) => x[0] - y[0]);
   // Overlapping or touching ranges (a <code> element and its tags) become one.
   const merged: Array<[number, number]> = [];

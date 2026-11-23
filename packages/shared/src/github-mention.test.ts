@@ -198,6 +198,27 @@ describe("worst-case input", () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
+  it.each([
+    ["list markers", "- ".repeat(4_900)],
+    ["ordered markers", "1. ".repeat(3_200)],
+    ["quote markers", "> ".repeat(4_900)],
+    ["brackets", `${"[".repeat(4_900)}${"]".repeat(4_900)}`],
+    ["emphasis", "*a".repeat(4_900)],
+  ])("takes the linear path for adversarial %s under the length cap", (_label, prefix) => {
+    const body = `${prefix} @nativepath-ai`;
+    expect(body.length).toBeLessThan(10_000);
+    const started = performance.now();
+    expect(containsBotMention(body, BOT)).toBe(true);
+    stripBotMention(body, BOT);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it("still parses ordinary nesting", () => {
+    expect(containsBotMention("- a\n  - b\n    > ```\n    > @nativepath-ai\n    > ```", BOT)).toBe(
+      false
+    );
+  });
+
   it("skips parsing when the handle never appears", () => {
     const body = "`".repeat(60_000);
     const started = performance.now();
