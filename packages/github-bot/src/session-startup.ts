@@ -349,7 +349,7 @@ export async function startSession(
         const posted = await postIssueComment(
           ghToken,
           commentsUrl,
-          `I couldn't start the ${names} review, so this PR has ${sessions.length} of ${reviewerCount} reviews. Request a review again to retry.`,
+          `I couldn't start the ${names} review, so ${sessions.length} of ${reviewerCount} reviews started. Request a review again to retry.`,
           userAgent
         );
         if (!posted) {

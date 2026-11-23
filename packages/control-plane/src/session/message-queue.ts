@@ -63,6 +63,7 @@ import type {
   EnqueuePromptCoreData,
   PromptMessageData,
 } from "./message-queue-types";
+import { isOpenCodeBedrockModel } from "../sandbox/bedrock-env";
 
 const AUTOFIX_ATTEMPT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const STUCK_PROCESSING_ERROR = "Execution timed out (stuck processing)";
@@ -912,18 +913,20 @@ export class SessionMessageQueue {
     const session = this.repository.getSession();
     const harness = getValidHarnessOrDefault(session?.harness);
     const strictSelection = getHarnessCapabilities(harness).selectionPolicy === "strict";
+    const effectiveModel = data.model || session?.model || DEFAULT_MODEL;
+    // A Bedrock model needs the key minted at sandbox launch, so check it before
+    // queueing on any harness rather than failing the prompt at dispatch.
+    const checkBeforeQueue = strictSelection || isOpenCodeBedrockModel(effectiveModel);
     let requestFingerprint: string | undefined;
     if (data.clientRequestId) {
       requestFingerprint = await fingerprintWebPrompt(data.participant.id, data);
     }
-    if (strictSelection) {
+    if (checkBeforeQueue) {
       // A retry of an accepted request returns its original message before the
       // mutable model/auth policy is consulted: it is not new work.
       const duplicate = this.findDuplicatePrompt(data, requestFingerprint);
       if (duplicate) return duplicate;
-      const modelError = await this.getProviderAuthenticationError(
-        data.model || session?.model || DEFAULT_MODEL
-      );
+      const modelError = await this.getProviderAuthenticationError(effectiveModel);
       if (modelError) throw new HarnessModelIncompatibleError(modelError);
     }
 

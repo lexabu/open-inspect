@@ -541,6 +541,23 @@ describe("SessionMessageQueue", () => {
     expect(h.repository.startMessageProcessing).not.toHaveBeenCalled();
   });
 
+  it("checks an OpenCode prompt for a Bedrock model before queueing it", async () => {
+    const h = buildQueue();
+    h.getProviderAuthenticationError.mockResolvedValue("Start a new session with this model.");
+    await expect(
+      h.queue.enqueuePromptFromApi({
+        content: "next",
+        authorId: "user-1",
+        source: "agent",
+        model: "amazon-bedrock/openai.gpt-6.2-sol",
+      })
+    ).rejects.toThrow("Start a new session");
+    expect(h.getProviderAuthenticationError).toHaveBeenCalledWith(
+      "amazon-bedrock/openai.gpt-6.2-sol"
+    );
+    expect(h.repository.createMessageWithAttachments).not.toHaveBeenCalled();
+  });
+
   it("rejects new websocket and API prompts during a failed safety hold", async () => {
     const h = buildQueue(
       () => false,

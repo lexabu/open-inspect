@@ -15,7 +15,8 @@ export interface BedrockSandboxConfig {
 /** OpenCode's provider id for Amazon Bedrock models (`amazon-bedrock/<model>`). */
 const OPENCODE_BEDROCK_PROVIDER = "amazon-bedrock";
 
-function isOpenCodeBedrockModel(model: string): boolean {
+/** Whether a model runs on OpenCode's Amazon Bedrock provider. */
+export function isOpenCodeBedrockModel(model: string): boolean {
   return extractProviderAndModel(model).provider === OPENCODE_BEDROCK_PROVIDER;
 }
 
