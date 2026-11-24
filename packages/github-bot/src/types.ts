@@ -26,6 +26,9 @@ export interface Env {
   /** GitHub App bot username (e.g., "open-inspect-bot[bot]"). */
   GITHUB_BOT_USERNAME: string;
 
+  /** Short command that also calls the bot (e.g., "npai" for `/npai` and `npai`); unset for none. */
+  GITHUB_BOT_COMMAND?: string;
+
   /** GitHub App ID for JWT generation. */
   GITHUB_APP_ID: string;
 

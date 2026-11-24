@@ -23,6 +23,8 @@ export interface ResolvedGitHubConfig {
   reviewers: GitHubReviewer[] | null;
   /** Reviews and comment actions post COMMENT only, never APPROVE or REQUEST_CHANGES. */
   commentOnlyReviews: boolean;
+  /** Reviews end with one line listing the bot's comment commands. */
+  reviewTip: boolean;
   /** The AI Review check run on each pull request head; off posts no check. */
   mergeGate: GitHubMergeGate;
   autoReviewOnOpen: boolean;
@@ -48,6 +50,8 @@ const resolvedGitHubConfigResponseSchema = z.object({
         .default(null),
       // Control planes that predate comment-only reviews omit it.
       commentOnlyReviews: z.boolean().default(false),
+      // Control planes that predate the command tip omit it.
+      reviewTip: z.boolean().default(false),
       // Control planes that predate the merge gate omit it.
       mergeGate: githubMergeGateSchema.default("off"),
       autoReviewOnOpen: z.boolean(),
@@ -64,6 +68,7 @@ const FAIL_CLOSED: Omit<ResolvedGitHubConfig, "model"> = {
   reasoningEffort: null,
   reviewers: null,
   commentOnlyReviews: true,
+  reviewTip: false,
   mergeGate: "off",
   autoReviewOnOpen: false,
   enabledRepos: [],
@@ -134,6 +139,7 @@ export async function getGitHubConfig(
       reasoningEffort: null,
       reviewers: null,
       commentOnlyReviews: false,
+      reviewTip: false,
       mergeGate: "off",
       autoReviewOnOpen: true,
       enabledRepos: null,
@@ -149,6 +155,7 @@ export async function getGitHubConfig(
     reasoningEffort: data.config.reasoningEffort,
     reviewers: data.config.reviewers,
     commentOnlyReviews: data.config.commentOnlyReviews,
+    reviewTip: data.config.reviewTip,
     mergeGate: data.config.mergeGate,
     autoReviewOnOpen: data.config.autoReviewOnOpen,
     enabledRepos: data.config.enabledRepos,

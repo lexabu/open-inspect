@@ -99,6 +99,7 @@ module "control_plane_worker" {
       DEPLOYMENT_NAME                          = { value = var.deployment_name }
       APP_NAME                                 = { value = var.app_name }
       GITHUB_BOT_USERNAME                      = { value = var.github_bot_username }
+      GITHUB_BOT_COMMAND                       = { value = var.github_bot_command }
       SANDBOX_PROVIDER                         = { value = var.sandbox_provider }
       SANDBOX_INACTIVITY_TIMEOUT_MS            = { value = tostring(var.sandbox_inactivity_timeout_ms) }
       SANDBOX_UNATTENDED_INACTIVITY_TIMEOUT_MS = { value = tostring(var.sandbox_unattended_inactivity_timeout_ms) }

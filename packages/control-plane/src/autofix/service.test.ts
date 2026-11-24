@@ -140,7 +140,7 @@ function buildService() {
     settings,
     github,
     sessions,
-    "open-inspect[bot]",
+    { username: "open-inspect[bot]", command: "oi" },
     () => 2_000,
     resolveCredentialScope
   );
@@ -336,33 +336,35 @@ describe("AutofixService", () => {
     expect(h.github.getPullRequest).not.toHaveBeenCalled();
   });
 
-  it.each(["@open-inspect please look", "@open-inspect[bot] please look"])(
-    "leaves a comment that mentions the bot to the mention handler: %s",
-    async (body) => {
-      const h = buildService();
-      h.github.getPullRequestFeedback.mockResolvedValueOnce({
-        kind: "pr_comment",
-        id: "1234",
-        body,
-        url: "https://github.com/acme/widgets/pull/42#issuecomment-1234",
-        author: { id: "7", login: "alice", type: "User" },
-      });
+  it.each([
+    "@open-inspect please look",
+    "@open-inspect[bot] please look",
+    "oi security",
+    "please /oi review",
+  ])("leaves a comment that calls the bot to the mention handler: %s", async (body) => {
+    const h = buildService();
+    h.github.getPullRequestFeedback.mockResolvedValueOnce({
+      kind: "pr_comment",
+      id: "1234",
+      body,
+      url: "https://github.com/acme/widgets/pull/42#issuecomment-1234",
+      author: { id: "7", login: "alice", type: "User" },
+    });
 
-      const result = await h.service.process({
-        version: 1,
-        eventType: "issue_comment",
-        action: "created",
-        deliveryId: "delivery-1",
-        providerObject: { kind: "pr_comment", id: "1234" },
-        repository: { id: "99", owner: "acme", name: "widgets" },
-        pullRequestNumber: 42,
-        receivedAt: "2026-07-30T05:00:00.000Z",
-      });
+    const result = await h.service.process({
+      version: 1,
+      eventType: "issue_comment",
+      action: "created",
+      deliveryId: "delivery-1",
+      providerObject: { kind: "pr_comment", id: "1234" },
+      repository: { id: "99", owner: "acme", name: "widgets" },
+      pullRequestNumber: 42,
+      receivedAt: "2026-07-30T05:00:00.000Z",
+    });
 
-      expect(result).toMatchObject({ decision: "skipped", reason: "explicit_mention" });
-      expect(h.sessions.fetch).not.toHaveBeenCalled();
-    }
-  );
+    expect(result).toMatchObject({ decision: "skipped", reason: "explicit_mention" });
+    expect(h.sessions.fetch).not.toHaveBeenCalled();
+  });
 
   it("rejects human feedback from an author without live write permission", async () => {
     const h = buildService();

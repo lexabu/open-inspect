@@ -19,7 +19,9 @@ App or deploying the bot worker, start with
    ```text
    @my-app[bot] can you explain why the checkout test is failing?
    ```
-4. For line-specific discussion, mention the bot in an inline PR review comment.
+4. For line-specific discussion, mention the bot in an inline PR review comment. To ask for a review
+   on demand, comment `@my-app review` (or the short command, such as `npai`; see
+   [Review Commands](#review-commands)).
 5. Watch for the eyes reaction, which means the bot accepted the request.
 6. Open the Open-Inspect web app to watch the full session.
 
@@ -95,6 +97,7 @@ globally or per repository.
 | Base-branch update, PR's own diff unchanged | The last verdict carries forward to the new head.                                                            |
 | Base branch changed, or PR reopened         | The verdict is dropped and the check asks for a review.                                                      |
 | **Re-run**, **Re-run all**, **Review now**  | Reviews the head commit for whoever clicked, if they may trigger the bot. Draft PRs are skipped.             |
+| A [review command](#review-commands)        | Same as **Review now**: reviews the head commit for whoever commented, through the same gate.                |
 
 In `shadow` mode a missing or unfavourable verdict concludes `neutral`, which never blocks a merge.
 In `required` mode it concludes `failure`, or `action_required` when no review covers the head, so
@@ -192,6 +195,9 @@ reason. Both are recorded on the check:
 @my-app override 3f9c2ab reviewer misread the migration; verified by hand
 ```
 
+With a [short command](#review-commands) configured, `npai override …` and `/npai override …` work
+the same way.
+
 The override applies only if the commit it names is still the head; otherwise the bot replies with
 the current head. A comment that mentions the bot and "override" in any other form is an ordinary
 request to the bot. An override covers that one commit, on the base branch and with the diff it had
@@ -233,6 +239,57 @@ is one signal next to the required human approval, not a replacement for it.
   it were absent, for one release; migration `0098` removes it. Before rolling back to a version
   without `mergeGate`, remove `mergeGate` from the stored GitHub settings: that version rejects
   settings it does not know.
+
+---
+
+## Review Commands
+
+A PR comment calls the bot with any of three triggers:
+
+| Trigger       | Counts                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------ |
+| `@my-app`     | Anywhere in the comment's prose, with or without `[bot]`.                                  |
+| `/npai`       | Anywhere in the comment's prose, but not inside a path, URL or longer word (`src/npai/x`). |
+| `npai` (bare) | Only where it starts a line, so prose that names the bot ("ask npai later") does not.      |
+
+`npai` stands for the deployment's short command, set with `GITHUB_BOT_COMMAND` (Terraform:
+`github_bot_command`); with none set, only the mention works. Text in code spans, code blocks, HTML
+comments and `<code>` elements never counts, and neither does a bare `npai` in a quoted or listed
+line (`> npai`, `- npai`), an email (`npai@x`) or a possessive (`npai's`).
+
+The rest of the comment, with its triggers removed, says what to do:
+
+| Comment                                  | What starts                                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------ |
+| `npai` or `npai review`                  | The default full review.                                                       |
+| `npai security` or `npai review bugs`    | The same review, told to look hardest at that area and lead with it.           |
+| `npai review <any text>`                 | A review focused on that text (passed to the reviewer as untrusted).           |
+| `npai override <commit> <reason>`        | An [override](#override) of the AI Review check, parsed as strictly as before. |
+| Anything else (`npai why is this slow?`) | A free-form [comment session](#mention-actions), as with a mention.            |
+
+The focus areas are `security`, `performance`, `bugs` and `tests`. A word after the trigger that is
+not one of them, without `review` before it, makes the comment a free-form request.
+
+A review command reviews the pull request's current head, like a review request: the same allowed
+trigger users and write-access check, the configured reviewers, no review of a draft or closed PR,
+and the review pinned to the head commit at the time of the comment. Where the merge gate is on, the
+control plane starts it, exactly as **Review now** on the [AI Review check](#ai-review-check) does,
+so the check shows it in progress and takes its verdict; a review already running on the head is not
+started twice. Where the merge gate is off, it starts an ordinary review session. Review commands
+work in PR conversation comments and inline review threads; `!model` and `!reasoning` flags apply
+only to free-form requests.
+
+### Command tip
+
+With the `reviewTip` setting on (`false` by default, set through the integration settings API,
+globally or per repository), every review ends with one line listing the commands:
+
+```text
+Commands: `npai` (full review) · `npai security|performance|bugs|tests` · `npai <question>` · Re-run on the AI Review check
+```
+
+The last part appears only where the merge gate is on. With no short command set, the line names
+`@my-app` instead.
 
 ---
 
@@ -533,7 +590,9 @@ If a PR was converted from draft to ready for review, mention the bot in a PR co
 
 Mentions must be in a pull request conversation comment or PR review thread. Mentions on ordinary
 GitHub issues are ignored. Use the App's handle, with or without `[bot]`: `@my-app` and
-`@my-app[bot]` both work. GitHub does not autocomplete Apps, so type the handle in full.
+`@my-app[bot]` both work. GitHub does not autocomplete Apps, so type the handle in full. A bare
+short command (`npai`) counts only at the very start of a line; see
+[Review Commands](#review-commands).
 
 ### I see an eyes reaction but no follow-up
 

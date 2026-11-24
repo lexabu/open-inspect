@@ -41,6 +41,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { apiOnlyGitHubSettings } from "./github-api-only-settings";
 import { GitHubAutofixSettingsFields } from "./github-autofix-settings-fields";
 import { GitHubAutoReviewDeprecationNotice } from "./github-auto-review-deprecation-notice";
 import { AddRepositoryOverride } from "../add-repository-override";
@@ -268,7 +269,7 @@ function RepoOverrideRow({
     const repository = parseRepositoryFullName(entry.repo);
     if (!repository) return;
     setSaving(true);
-    const settings: GitHubBotSettings = {};
+    const settings: GitHubBotSettings = apiOnlyGitHubSettings(entry.settings);
     if (model) settings.model = model;
     if (effort) settings.reasoningEffort = effort;
     if (harness) settings.harness = harness;
@@ -278,16 +279,6 @@ function RepoOverrideRow({
       settings.commentActionInstructions = commentActionInstructions;
     if (autoReviewMode === "override") settings.autoReviewOnOpen = autoReviewOnOpen;
     if (autofixMode === "override") settings.autofix = autofixOverrides;
-    // The form does not edit reviewers yet; keep any list set through the API.
-    if (entry.settings.reviewers) settings.reviewers = entry.settings.reviewers;
-    // Nor comment-only reviews.
-    if (entry.settings.commentOnlyReviews !== undefined) {
-      settings.commentOnlyReviews = entry.settings.commentOnlyReviews;
-    }
-    // Nor the AI Review merge gate.
-    if (entry.settings.mergeGate !== undefined) {
-      settings.mergeGate = entry.settings.mergeGate;
-    }
 
     try {
       const res = await browserApiFetch(

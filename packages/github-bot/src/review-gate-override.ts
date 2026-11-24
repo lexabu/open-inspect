@@ -3,8 +3,11 @@
  * pull request passes the head's AI Review check, on the record.
  */
 import { createKvCacheStore } from "@open-inspect/shared/cache-store";
-import { botHandle, containsBotMention } from "@open-inspect/shared/github-mention";
-import { escapeRegExp } from "@open-inspect/shared/regex";
+import {
+  botHandle,
+  containsBotMention,
+  lineTriggerSource,
+} from "@open-inspect/shared/github-mention";
 import type { Env } from "./types";
 import type { Logger } from "./logger";
 import { checkSenderPermission, postIssueComment, postReaction } from "./github-auth";
@@ -24,13 +27,18 @@ export interface OverrideCommand {
 
 /**
  * The override in a comment: a line of its own, outside code fences, that reads
- * `@bot override <commit> <reason>`. Anything looser is not a command, so a request in
- * prose ("@bot override the retry limit for this client") stays a request to the bot.
+ * `<trigger> override <commit> <reason>`, where the trigger is `@bot` or the bot's short
+ * command. Anything looser is not a command, so a request in prose ("@bot override the
+ * retry limit for this client") stays a request to the bot.
  */
-export function parseOverrideCommand(body: string, botUsername: string): OverrideCommand | null {
-  if (!containsBotMention(body, botUsername)) return null;
+export function parseOverrideCommand(
+  body: string,
+  botUsername: string,
+  botCommand: string | undefined
+): OverrideCommand | null {
+  if (!containsBotMention(body, botUsername, botCommand)) return null;
   const command = new RegExp(
-    `^@${escapeRegExp(botHandle(botUsername))}(?:\\[bot\\])?[ \\t]+override[ \\t]+([0-9a-f]{7,64})(?:[ \\t]+(.*))?$`,
+    `^${lineTriggerSource(botUsername, botCommand)}[ \\t]+override[ \\t]+([0-9a-f]{7,64})(?:[ \\t]+(.*))?$`,
     "i"
   );
   let fenced = false;

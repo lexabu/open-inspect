@@ -78,6 +78,7 @@ The bot is deployed via Terraform as a standalone Cloudflare Worker alongside th
 | `DEPLOYMENT_NAME`            | Plain text            | Deployment identifier for logging                                                   |
 | `DEFAULT_MODEL`              | Plain text            | Model ID for new sessions (e.g., `anthropic/claude-haiku-4-5`)                      |
 | `GITHUB_BOT_USERNAME`        | Plain text            | Bot's GitHub login (e.g., `my-app[bot]`) for @mention detection and loop prevention |
+| `GITHUB_BOT_COMMAND`         | Plain text (optional) | Short command that also calls the bot (`/npai`, or `npai` at a line start)          |
 | `GITHUB_APP_ID`              | Secret                | GitHub App ID for JWT generation                                                    |
 | `GITHUB_APP_PRIVATE_KEY`     | Secret                | GitHub App private key (must be PKCS#8 format)                                      |
 | `GITHUB_APP_INSTALLATION_ID` | Secret                | GitHub App installation ID for token exchange                                       |
@@ -159,9 +160,13 @@ people to request the GitHub App bot through the PR reviewer picker.
 **Issue Comment:**
 
 1. Check `issue.pull_request` exists — ignore non-PR comments
-2. Check comment body contains `@{GITHUB_BOT_USERNAME}` — ignore if no mention
+2. Check comment body calls the bot (`@{GITHUB_BOT_USERNAME}`, `/{GITHUB_BOT_COMMAND}`, or
+   `{GITHUB_BOT_COMMAND}` at a line start) — ignore otherwise
 3. Check `sender.login` is not `GITHUB_BOT_USERNAME` (case-insensitive) — prevent loops
-4. Strip @mention, post eyes reaction, create session, send comment action prompt
+4. Strip the triggers and read the rest: a review command (empty, `review`, a focus area, or
+   `review <focus>`) reviews the PR head as a review request does, through the AI Review gate when
+   it is on; anything else posts an eyes reaction, creates a session and sends the comment action
+   prompt
 
 **Review Comment:** Same as issue comment, but the prompt additionally includes `filePath`,
 `diffHunk`, and `commentId` for thread-specific context and reply threading.

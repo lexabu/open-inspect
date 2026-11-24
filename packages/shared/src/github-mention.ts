@@ -4,15 +4,20 @@ import { gfmTable } from "micromark-extension-gfm-table";
 import { escapeRegExp } from "./regex";
 
 /**
- * GitHub App mentions in Markdown comment bodies, for a bot login such as
- * `my-app[bot]`. People type the App's handle without the suffix (GitHub does
- * not autocomplete Apps), so `@my-app` and `@my-app[bot]` both count.
+ * How a Markdown comment body calls a GitHub App, for a bot login such as `my-app[bot]`
+ * and an optional short command such as `ma`. Three triggers count:
  *
- * Not a mention: text inside code, an HTML tag or comment, or a `<code>` element, an email
- * address in any script (`me@my-app.com`), a team handle (`@my-app/team`), or a
- * longer handle that only starts with the App's name (`@my-app-other`,
- * `@my-app[bot]-clone`), including one split by an invisible format character.
- * Emphasis and footnotes may surround either form (`_@my-app_`, `@my-app[^1]`).
+ * - A mention. People type the App's handle without the suffix (GitHub does not
+ *   autocomplete Apps), so `@my-app` and `@my-app[bot]` both count, anywhere in prose.
+ * - The command as a slash command (`/ma`), anywhere in prose.
+ * - The bare command (`ma`), only where it starts a line, so prose that names it does not.
+ *
+ * Not a trigger: text inside code, an HTML tag or comment, or a `<code>` element, an email
+ * address in any script (`me@my-app.com`, `ma@x`), a team handle (`@my-app/team`), a path
+ * (`src/ma/x`), a quoted or listed line (`> ma`), or a longer word that only starts with
+ * the trigger (`@my-app-other`, `@my-app[bot]-clone`, `mas`), including one split by an
+ * invisible format character. Emphasis and footnotes may surround a mention (`_@my-app_`,
+ * `@my-app[^1]`).
  */
 
 /** The App's handle (`my-app`) from a configured login, with or without `[bot]`. */
@@ -33,17 +38,70 @@ export function isBotLogin(login: string | null | undefined, botUsername: string
 /** Letters, digits and marks in any script, plus invisible format characters. */
 const WORD = String.raw`\p{L}\p{N}\p{M}\p{Cf}`;
 
-function botMentionPattern(botUsername: string, flags: string): RegExp | null {
+/** A short command: an ASCII letter or digit, then letters, digits or hyphens. */
+const COMMAND = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+
+/** The configured short command, or null where none is set. A malformed one is an error. */
+function botCommand(command: string | undefined): string | null {
+  const value = command?.trim() ?? "";
+  if (value === "") return null;
+  if (!COMMAND.test(value)) throw new Error(`Invalid bot command "${value}"`);
+  return value;
+}
+
+/** The end of a command: not a longer word, a path, an email, a possessive or a domain. */
+const COMMAND_END = String.raw`(?![${WORD}/@'’-]|\.[${WORD}])`;
+
+/**
+ * Every trigger, with the bare command in the `bare` group: it counts only at the start
+ * of a body line, which the caller checks for a match at the start of a prose segment.
+ */
+function botTriggerPattern(
+  botUsername: string,
+  command: string | undefined,
+  flags: string
+): RegExp | null {
   const raw = botHandle(botUsername);
-  if (!raw) return null;
-  const handle = escapeRegExp(raw);
-  // The full login keeps the boundaries it always had: anything but a longer handle.
-  const full = String.raw`@${handle}\[bot\](?![A-Za-z0-9-])`;
-  // The plain handle is stricter: not after an email's local part or a path, and not
-  // the start of `[bot]...`, a longer handle, a team, an email or a domain.
-  const before = String.raw`(?<![${WORD}.%+/-])`;
-  const afterPlain = String.raw`(?![${WORD}/@-]|\[(?!\^)|\.[${WORD}])`;
-  return new RegExp(`${full}|${before}@${handle}${afterPlain}`, `${flags}u`);
+  const short = botCommand(command);
+  if (!raw && !short) return null;
+  const alternatives: string[] = [];
+  if (raw) {
+    const handle = escapeRegExp(raw);
+    // The full login keeps the boundaries it always had: anything but a longer handle.
+    alternatives.push(String.raw`@${handle}\[bot\](?![A-Za-z0-9-])`);
+    // The plain handle is stricter: not after an email's local part or a path, and not
+    // the start of `[bot]...`, a longer handle, a team, an email or a domain.
+    const before = String.raw`(?<![${WORD}.%+/-])`;
+    const afterPlain = String.raw`(?![${WORD}/@-]|\[(?!\^)|\.[${WORD}])`;
+    alternatives.push(`${before}@${handle}${afterPlain}`);
+  }
+  if (short) {
+    const name = escapeRegExp(short);
+    // The slash command is not part of a path, a URL or an email.
+    alternatives.push(String.raw`(?<![${WORD}.%+/@~:-])/${name}${COMMAND_END}`);
+    // The bare command takes its line's indent and the spaces after it, so a strip
+    // leaves the rest of the line at its start.
+    alternatives.push(String.raw`(?<bare>^[ \t]{0,3}${name}${COMMAND_END}[ \t]*)`);
+  }
+  return new RegExp(alternatives.join("|"), `${flags}imu`);
+}
+
+/** The shortest way to call the bot: its short command where set, otherwise `@handle`. */
+export function botTrigger(botUsername: string, command: string | undefined): string {
+  return botCommand(command) ?? `@${botHandle(botUsername)}`;
+}
+
+/**
+ * A trigger at the start of a trimmed line, as a regex source for line commands:
+ * `@my-app`, `@my-app[bot]`, `/ma` or `ma`.
+ */
+export function lineTriggerSource(botUsername: string, command: string | undefined): string {
+  const forms: string[] = [];
+  const raw = botHandle(botUsername);
+  if (raw) forms.push(String.raw`@${escapeRegExp(raw)}(?:\[bot\])?`);
+  const short = botCommand(command);
+  if (short) forms.push(String.raw`\/?${escapeRegExp(short)}`);
+  return forms.length > 0 ? `(?:${forms.join("|")})` : "(?!)";
 }
 
 /** Node types whose text is never prose: code blocks and inline code. */
@@ -247,18 +305,26 @@ function fencedRanges(body: string): Array<[number, number]> {
   return ranges;
 }
 
-/** The last body segmented: a mention check is usually followed by a strip. */
-let lastSegmented: { body: string; parts: string[] } | null = null;
+/** The last body segmented: a trigger check is usually followed by a strip. */
+let lastSegmented: { body: string; parts: ProsePart[] } | null = null;
 
-/** Prose and code segments, alternating with prose at even indexes. */
-function segments(body: string): string[] {
+interface ProsePart {
+  text: string;
+  /** Whether the part begins a line of the body, rather than following code on it. */
+  atLineStart: boolean;
+  /** Code that follows the part, exactly as written; empty after the last part. */
+  code: string;
+}
+
+/** Prose parts of the body, each followed by the code after it. */
+function segments(body: string): ProsePart[] {
   if (lastSegmented?.body === body) return lastSegmented.parts;
   const parts = computeSegments(body);
   lastSegmented = { body, parts };
   return parts;
 }
 
-function computeSegments(body: string): string[] {
+function computeSegments(body: string): ProsePart[] {
   const ranges = parseIsBounded(body) ? parsedCodeRanges(body) : fencedRanges(body);
   ranges.sort((x, y) => x[0] - y[0]);
   // Overlapping or touching ranges (a <code> element and its tags) become one.
@@ -268,39 +334,65 @@ function computeSegments(body: string): string[] {
     if (last && start <= last[1]) last[1] = Math.max(last[1], end);
     else merged.push([start, end]);
   }
-  const parts: string[] = [];
+  const parts: ProsePart[] = [];
   let cursor = 0;
+  const prose = (end: number, code: string): void => {
+    const atLineStart = cursor === 0 || body[cursor - 1] === "\n";
+    parts.push({ text: body.slice(cursor, end), atLineStart, code });
+  };
   for (const [start, end] of merged) {
-    parts.push(body.slice(cursor, start), body.slice(start, end));
+    prose(start, body.slice(start, end));
     cursor = end;
   }
-  parts.push(body.slice(cursor));
+  prose(body.length, "");
   return parts;
 }
 
 /**
- * Whether the body could hold a mention at all. Parsing is skipped otherwise, so
+ * Whether the body could hold a trigger at all. Parsing is skipped otherwise, so
  * ordinary comments cost a substring check; GitHub caps comments at 65,536
  * characters, which bounds the parse for the rest.
  */
-function mayMention(body: string, botUsername: string): boolean {
+function mayTrigger(body: string, botUsername: string, command: string | undefined): boolean {
+  const text = body.toLowerCase();
   const handle = botHandle(botUsername).toLowerCase();
-  return Boolean(handle) && body.toLowerCase().includes(`@${handle}`);
+  const short = botCommand(command)?.toLowerCase();
+  return (Boolean(handle) && text.includes(`@${handle}`)) || (!!short && text.includes(short));
 }
 
-export function containsBotMention(body: string, botUsername: string | undefined): boolean {
-  if (!botUsername || !mayMention(body, botUsername)) return false;
-  const pattern = botMentionPattern(botUsername, "i");
+/** The matches in a prose part that are triggers: the bare command only at a line start. */
+function* triggers(part: ProsePart, pattern: RegExp): Generator<RegExpExecArray> {
+  for (const match of part.text.matchAll(pattern)) {
+    if (match.groups?.bare === undefined || match.index > 0 || part.atLineStart) yield match;
+  }
+}
+
+/** Whether the body calls the bot with any trigger outside code. */
+export function containsBotMention(
+  body: string,
+  botUsername: string | undefined,
+  command?: string
+): boolean {
+  if (!botUsername || !mayTrigger(body, botUsername, command)) return false;
+  const pattern = botTriggerPattern(botUsername, command, "g");
   if (!pattern) return false;
-  return segments(body).some((part, index) => index % 2 === 0 && pattern.test(part));
+  return segments(body).some((part) => !triggers(part, pattern).next().done);
 }
 
-/** Remove the bot's mentions from prose; code is left exactly as written. */
-export function stripBotMention(body: string, botUsername: string): string {
-  const pattern = mayMention(body, botUsername) ? botMentionPattern(botUsername, "gi") : null;
+/** Remove the bot's triggers from prose; code is left exactly as written. */
+export function stripBotMention(body: string, botUsername: string, command?: string): string {
+  const pattern = mayTrigger(body, botUsername, command)
+    ? botTriggerPattern(botUsername, command, "g")
+    : null;
   if (!pattern) return body.trim();
-  return segments(body)
-    .map((part, index) => (index % 2 === 0 ? part.replace(pattern, "") : part))
-    .join("")
-    .trim();
+  let stripped = "";
+  for (const part of segments(body)) {
+    let cursor = 0;
+    for (const match of triggers(part, pattern)) {
+      stripped += part.text.slice(cursor, match.index);
+      cursor = match.index + match[0].length;
+    }
+    stripped += part.text.slice(cursor) + part.code;
+  }
+  return stripped.trim();
 }

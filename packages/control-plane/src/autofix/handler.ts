@@ -66,7 +66,7 @@ export async function handleAutofixJob(
     },
     github,
     sessions,
-    env.GITHUB_BOT_USERNAME,
+    { username: env.GITHUB_BOT_USERNAME, command: env.GITHUB_BOT_COMMAND },
     () => Date.now(),
     resolveCredentialScope
   );

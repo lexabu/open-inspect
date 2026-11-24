@@ -123,6 +123,7 @@ describe("GitHubIntegrationSettings models and saves", () => {
           autoReviewOnOpen: true,
           reviewers,
           commentOnlyReviews: true,
+          reviewTip: true,
           mergeGate: "shadow",
         },
       },
@@ -132,6 +133,7 @@ describe("GitHubIntegrationSettings models and saves", () => {
           settings: {
             reviewers: reviewers.slice(0, 1),
             commentOnlyReviews: false,
+            reviewTip: false,
             mergeGate: "required",
           },
         },
@@ -157,6 +159,7 @@ describe("GitHubIntegrationSettings models and saves", () => {
         defaults: expect.objectContaining({
           reviewers,
           commentOnlyReviews: true,
+          reviewTip: true,
           mergeGate: "shadow",
         }),
       }),
@@ -166,6 +169,7 @@ describe("GitHubIntegrationSettings models and saves", () => {
       expect.objectContaining({
         reviewers: reviewers.slice(0, 1),
         commentOnlyReviews: false,
+        reviewTip: false,
         mergeGate: "required",
       }),
     ]);

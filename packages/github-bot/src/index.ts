@@ -112,6 +112,7 @@ app.post("/webhooks/github", async (c) => {
     payload,
     deliveryId: deliveryId ?? `missing:${traceId}`,
     botUsername: c.env.GITHUB_BOT_USERNAME,
+    botCommand: c.env.GITHUB_BOT_COMMAND,
     receivedAt: new Date(),
   });
   let autofixEnqueueFailed = false;

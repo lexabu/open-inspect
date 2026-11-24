@@ -53,6 +53,7 @@ const ENV_CONFIG_KEYS = {
   DEPLOYMENT_NAME: true,
   APP_NAME: true,
   GITHUB_BOT_USERNAME: true,
+  GITHUB_BOT_COMMAND: true,
   SCM_PROVIDER: true,
   WORKER_URL: true,
   WEB_APP_URL: true,

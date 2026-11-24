@@ -211,7 +211,8 @@ export class AutofixService {
     private readonly settings: AutofixSettingsResolver,
     private readonly github: GitHubAutofixProvider,
     private readonly sessions: SessionClient,
-    private readonly botUsername: string,
+    /** The bot's login, and the short command that also calls it, if any. */
+    private readonly bot: { username: string; command: string | undefined },
     private readonly now: () => number,
     private readonly resolveCredentialScope: (sessionId: string) => Promise<CredentialScope>
   ) {}
@@ -455,7 +456,7 @@ export class AutofixService {
   ): Promise<string | null> {
     const authorType = feedback.author.type.toLowerCase();
     const authorLogin = feedback.author.login.toLowerCase();
-    if (authorType === "bot" && isBotLogin(authorLogin, this.botUsername)) {
+    if (authorType === "bot" && isBotLogin(authorLogin, this.bot.username)) {
       if (feedback.kind !== "review") return "bot_pr_comment";
       if (!settings.openInspectReviewsEnabled) return "own_reviews_disabled";
       if (
@@ -466,7 +467,10 @@ export class AutofixService {
         return "own_review_replies";
       }
     } else if (authorType === "user") {
-      if (feedback.kind === "pr_comment" && containsBotMention(feedback.body, this.botUsername)) {
+      if (
+        feedback.kind === "pr_comment" &&
+        containsBotMention(feedback.body, this.bot.username, this.bot.command)
+      ) {
         return "explicit_mention";
       }
       const canWrite = await this.github.hasPullRequestWritePermission(

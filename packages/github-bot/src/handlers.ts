@@ -8,10 +8,16 @@ import type {
   ReviewCommentPayload,
 } from "./types";
 import type { Logger } from "./logger";
-import { buildCodeReviewPrompt, buildCommentActionPrompt, type ReviewerContext } from "./prompts";
+import {
+  buildCodeReviewPrompt,
+  buildCommentActionPrompt,
+  buildReviewCommandTip,
+  type ReviewerContext,
+} from "./prompts";
 import type { ResolvedGitHubConfig } from "./utils/integration-config";
 import { requestedReviewerPayloadSchema } from "./payload-schemas";
 import {
+  botTrigger,
   containsBotMention,
   isBotLogin,
   stripBotMention,
@@ -27,6 +33,7 @@ import { getPullRequest } from "./github-auth";
 import { findSuiteReviewRun } from "./github-checks";
 import { mergeGateEnabled, repositoryClient, startOpeningReview } from "./review-gate";
 import { handleOverrideComment, parseOverrideCommand } from "./review-gate-override";
+import { parseCommentCommand, type CommentCommand, type ReviewFocus } from "./comment-command";
 
 export type { HandlerResult } from "./session-startup";
 
@@ -46,7 +53,8 @@ function reviewPromptFor(
   env: Env,
   repo: Pick<ReviewRequestedPayload["repository"], "owner" | "name" | "private">,
   pr: ReviewRequestedPayload["pull_request"],
-  preMerge: boolean
+  preMerge: boolean,
+  focus: ReviewFocus | null = null
 ): (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string {
   return (config, reviewer) =>
     buildCodeReviewPrompt({
@@ -66,6 +74,13 @@ function reviewPromptFor(
       reviewer,
       commentOnlyReviews: config.commentOnlyReviews,
       preMerge,
+      focus,
+      commandTip: config.reviewTip
+        ? buildReviewCommandTip(
+            botTrigger(env.GITHUB_BOT_USERNAME, env.GITHUB_BOT_COMMAND),
+            config.mergeGate !== "off"
+          )
+        : null,
     });
 }
 
@@ -162,12 +177,39 @@ async function rerunReview(
     headSha: string;
   }
 ): Promise<HandlerResult> {
-  const { repository: repo, sender, pullNumber, headSha } = target;
-  if (!(await mergeGateEnabled(env, log, repo))) {
+  if (!(await mergeGateEnabled(env, log, target.repository))) {
     return { outcome: "skipped", skip_reason: "merge_gate_off" };
   }
-  // The click may come long after the check was posted; the prompt is written for the
-  // pull request as it is now, and the control plane refuses a head that has moved on.
+  return reviewHead(env, log, traceId, {
+    ...target,
+    reactionPath: `issues/${target.pullNumber}`,
+    preMerge: true,
+    focus: null,
+  });
+}
+
+/**
+ * Reviews the pull request's head for whoever asked, the way a review request does: where
+ * the merge gate is on, the review is started by the control plane and feeds the AI Review
+ * check. A `headSha` given is the commit asked about; the review skips once the head moves on.
+ */
+async function reviewHead(
+  env: Env,
+  log: Logger,
+  traceId: string,
+  target: {
+    repository: CheckRunPayload["repository"];
+    sender: CheckRunPayload["sender"];
+    pullNumber: number;
+    headSha: string | null;
+    reactionPath: string;
+    preMerge: boolean;
+    focus: ReviewFocus | null;
+  }
+): Promise<HandlerResult> {
+  const { repository: repo, sender, pullNumber } = target;
+  // The ask may come long after the commit it names; the prompt is written for the pull
+  // request as it is now, and the control plane refuses a head that has moved on.
   const client = await repositoryClient(env, repo);
   const pr = await getPullRequest(
     client.token,
@@ -177,23 +219,30 @@ async function rerunReview(
   if (pr === null) throw new Error(`Pull request #${pullNumber} unreadable`);
   if (pr.state !== "open") return { outcome: "skipped", skip_reason: "pr_not_open" };
   if (pr.draft) return { outcome: "skipped", skip_reason: "draft_pr" };
-  if (pr.head.sha !== headSha) {
+  if (target.headSha !== null && pr.head.sha !== target.headSha) {
     log.debug("handler.check_not_on_head", { trace_id: traceId, pull_number: pullNumber });
     return { outcome: "skipped", skip_reason: "check_not_on_head" };
   }
 
-  // A suite re-run and a run re-run of one click, or two clicks, start one review: the
-  // control plane admits one attempt per head.
+  // A suite re-run and a run re-run of one click, two clicks, or a click and a comment
+  // start one review: the control plane admits one attempt per head.
   return startSession(env, log, traceId, {
     repository: repo,
     sender,
     pullNumber,
     title: `GitHub: Review PR #${pullNumber}`,
     action: "review",
-    reactionPath: `issues/${pullNumber}`,
-    gated: { headSha, base: pr.base },
-    buildPrompt: reviewPromptFor(env, repo, pr, true),
+    reactionPath: target.reactionPath,
+    gated: { headSha: pr.head.sha, base: pr.base },
+    buildPrompt: reviewPromptFor(env, repo, pr, target.preMerge, target.focus),
   });
+}
+
+/** What a comment that calls the bot asks for, once its triggers are removed. */
+function commentCommand(env: Env, body: string): CommentCommand {
+  return parseCommentCommand(
+    stripBotMention(body, env.GITHUB_BOT_USERNAME, env.GITHUB_BOT_COMMAND)
+  );
 }
 
 export async function handlePullRequestOpened(
@@ -246,7 +295,7 @@ export async function handleIssueComment(
     return { outcome: "skipped", skip_reason: "not_a_pr" };
   }
 
-  if (!containsBotMention(comment.body, env.GITHUB_BOT_USERNAME)) {
+  if (!containsBotMention(comment.body, env.GITHUB_BOT_USERNAME, env.GITHUB_BOT_COMMAND)) {
     log.debug("handler.no_mention", {
       trace_id: traceId,
       issue_number: issue.number,
@@ -262,20 +311,35 @@ export async function handleIssueComment(
 
   // An override is a command to the merge gate, never a prompt; where the gate is off
   // the comment is an ordinary mention.
-  const command = parseOverrideCommand(comment.body, env.GITHUB_BOT_USERNAME);
-  if (command) {
+  const override = parseOverrideCommand(
+    comment.body,
+    env.GITHUB_BOT_USERNAME,
+    env.GITHUB_BOT_COMMAND
+  );
+  if (override) {
     const overridden = await handleOverrideComment(env, log, traceId, {
       repository: repo,
       pullNumber: issue.number,
       commentId: comment.id,
       sender,
-      command,
+      command: override,
     });
     if (overridden !== null) return overridden;
   }
 
-  const text = stripBotMention(comment.body, env.GITHUB_BOT_USERNAME);
-  const inlineFlags = parseInlinePromptFlags(text);
+  const command = commentCommand(env, comment.body);
+  if (command.kind === "review") {
+    return reviewHead(env, log, traceId, {
+      repository: repo,
+      sender,
+      pullNumber: issue.number,
+      headSha: null,
+      reactionPath: `issues/comments/${comment.id}`,
+      preMerge: false,
+      focus: command.focus,
+    });
+  }
+  const inlineFlags = parseInlinePromptFlags(command.text);
   return startSession(env, log, traceId, {
     repository: repo,
     sender,
@@ -307,7 +371,7 @@ export async function handleReviewComment(
 ): Promise<HandlerResult> {
   const { pull_request: pr, comment, repository: repo, sender } = payload;
 
-  if (!containsBotMention(comment.body, env.GITHUB_BOT_USERNAME)) {
+  if (!containsBotMention(comment.body, env.GITHUB_BOT_USERNAME, env.GITHUB_BOT_COMMAND)) {
     log.debug("handler.no_mention", {
       trace_id: traceId,
       pull_number: pr.number,
@@ -321,9 +385,19 @@ export async function handleReviewComment(
     return { outcome: "skipped", skip_reason: "self_comment" };
   }
 
-  const inlineFlags = parseInlinePromptFlags(
-    stripBotMention(comment.body, env.GITHUB_BOT_USERNAME)
-  );
+  const command = commentCommand(env, comment.body);
+  if (command.kind === "review") {
+    return reviewHead(env, log, traceId, {
+      repository: repo,
+      sender,
+      pullNumber: pr.number,
+      headSha: null,
+      reactionPath: `pulls/comments/${comment.id}`,
+      preMerge: false,
+      focus: command.focus,
+    });
+  }
+  const inlineFlags = parseInlinePromptFlags(command.text);
   return startSession(env, log, traceId, {
     repository: repo,
     sender,
