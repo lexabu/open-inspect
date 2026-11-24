@@ -61,7 +61,12 @@ describe("applyFooter and the footer marker", () => {
   it("takes only a complete generated footer line for a footer, never prose", () => {
     const body = `Findings\n${REVIEW_FOOTER_MARKER}\nReply via email if this is unclear.`;
     expect(applyFooter(body, line)).toBe(`${body}\n\n${REVIEW_FOOTER_MARKER}\n${line}`);
-    const withMemory = `Ok\n\n${REVIEW_FOOTER_MARKER}\nReply via Claude Opus 5.5 · Hindsight memory: searched, 2 facts used · built-in memory: not used · Cost: <$0.01`;
+    const withMemory = `Ok\n\n${REVIEW_FOOTER_MARKER}\nReply via Claude Opus 5.5 · Hindsight memory: searched, 2 facts recalled · built-in memory: not used · Cost: <$0.01`;
     expect(applyFooter(withMemory, line)).toBe(`Ok\n\n${REVIEW_FOOTER_MARKER}\n${line}`);
+  });
+
+  it("replaces a footer posted before the wording changed from used to recalled", () => {
+    const legacy = `Ok\n\n${REVIEW_FOOTER_MARKER}\nFindings via GPT-6.2 Sol · Hindsight memory: searched, 12 facts used · built-in memory: searched, 1 fact used · Bedrock cost: $0.12`;
+    expect(applyFooter(legacy, line)).toBe(`Ok\n\n${REVIEW_FOOTER_MARKER}\n${line}`);
   });
 });

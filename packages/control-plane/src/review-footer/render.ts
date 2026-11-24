@@ -13,8 +13,11 @@ export const REVIEW_FOOTER_MARKER = "<!-- open-inspect:footer -->";
 /** What one memory source did in a turn, counted from its tool calls' validated results. */
 export interface MemorySourceActivity {
   searched: boolean;
-  /** Facts returned to the agent: Hindsight recall results, or built-in reads of a fact. */
-  factsUsed: number;
+  /**
+   * Facts returned to the agent: Hindsight recall results, or built-in reads of a fact.
+   * Recalled, not necessarily relied on: only the agent knows which it used.
+   */
+  factsRecalled: number;
   /** Built-in search results: matches listed, not yet facts read. */
   matched: number;
   /** Facts saved as active (Hindsight retain, or a built-in write that took effect). */
@@ -56,11 +59,11 @@ function plural(count: number, noun: string): string {
 }
 
 function sourcePhrase(label: string, activity: MemorySourceActivity): string {
-  const found = activity.factsUsed > 0 || activity.matched > 0;
+  const found = activity.factsRecalled > 0 || activity.matched > 0;
   const parts = [
     ...(activity.searched && !found ? ["searched, nothing relevant"] : []),
     ...(activity.searched && found ? ["searched"] : []),
-    ...(activity.factsUsed > 0 ? [`${plural(activity.factsUsed, "fact")} used`] : []),
+    ...(activity.factsRecalled > 0 ? [`${plural(activity.factsRecalled, "fact")} recalled`] : []),
     ...(activity.updated > 0 ? ["updated"] : []),
     ...(activity.proposed > 0 ? [`${plural(activity.proposed, "fact")} proposed`] : []),
   ];

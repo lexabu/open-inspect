@@ -9,7 +9,7 @@ import {
 
 const IDLE: MemorySourceActivity = {
   searched: false,
-  factsUsed: 0,
+  factsRecalled: 0,
   matched: 0,
   updated: 0,
   proposed: 0,
@@ -23,10 +23,10 @@ describe("renderFooterLine", () => {
         kind: "review",
         modelId: "amazon-bedrock/openai.gpt-6.2-sol",
         totalCostUsd: 0.0512,
-        memory: { hindsight: { ...IDLE, searched: true, factsUsed: 2 }, builtIn: null },
+        memory: { hindsight: { ...IDLE, searched: true, factsRecalled: 2 }, builtIn: null },
       })
     ).toBe(
-      "Findings via GPT-6.2 Sol · Hindsight memory: searched, 2 facts used · Bedrock cost: $0.05"
+      "Findings via GPT-6.2 Sol · Hindsight memory: searched, 2 facts recalled · Bedrock cost: $0.05"
     );
   });
 

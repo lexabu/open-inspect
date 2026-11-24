@@ -14,7 +14,7 @@ import {
 } from "./service.test-support";
 
 const SOL_REVIEW_FOOTER =
-  "Findings via GPT-6.2 Sol · Hindsight memory: searched, 2 facts used · Bedrock cost: $0.05";
+  "Findings via GPT-6.2 Sol · Hindsight memory: searched, 2 facts recalled · Bedrock cost: $0.05";
 
 describe("ReviewFooter", () => {
   it("footers the review a GitHub-triggered turn posted, with platform data", async () => {

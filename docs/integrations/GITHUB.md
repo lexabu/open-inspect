@@ -309,7 +309,7 @@ globally or per repository), each review and PR conversation comment a GitHub-tr
 posts ends with one line of platform data, added after the session's turn completes:
 
 ```text
-Findings via GPT-6.2 Sol · Hindsight memory: searched, 2 facts used · Bedrock cost: $0.05
+Findings via GPT-6.2 Sol · Hindsight memory: searched, 2 facts recalled · Bedrock cost: $0.05
 ```
 
 - **Model**: the catalog name of the model that ran the turn. Replies read `Reply via ...`.

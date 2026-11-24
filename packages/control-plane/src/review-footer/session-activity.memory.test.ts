@@ -46,7 +46,7 @@ describe("Hindsight results are validated before they count", () => {
         ],
         ["hindsight-team-memory", "hindsight-code"]
       )
-    ).toEqual(["Hindsight memory: searched, 3 facts used"]);
+    ).toEqual(["Hindsight memory: searched, 3 facts recalled"]);
   });
 
   it("reads an empty recall as searched, nothing relevant", () => {
@@ -83,7 +83,7 @@ describe("Hindsight results are validated before they count", () => {
 });
 
 describe("built-in memory results are validated before they count", () => {
-  it("counts only a read that returned an active fact's body as a fact used", () => {
+  it("counts only a read that returned an active fact's body as a fact recalled", () => {
     expect(
       phrases([
         call("memory_search", { query: "q" }, JSON.stringify({ results: [], hasMore: false })),
@@ -91,7 +91,7 @@ describe("built-in memory results are validated before they count", () => {
         call("memory_read", { memoryId: "m2" }, JSON.stringify(archivedFact)),
         call("memory_read", { memoryId: "m3" }, "{}"),
       ])
-    ).toEqual(["built-in memory: searched, 1 fact used"]);
+    ).toEqual(["built-in memory: searched, 1 fact recalled"]);
   });
 
   it("counts active and proposed writes, and rejects a write result of the wrong shape", () => {
@@ -101,7 +101,14 @@ describe("built-in memory results are validated before they count", () => {
         call("memory_write", {}, JSON.stringify({ id: "m", status: "proposed", revisionId: "r" })),
         call("memory_write", {}, "memory_write failed (403): opted out"),
       ])?.builtIn
-    ).toEqual({ searched: false, factsUsed: 0, matched: 0, updated: 1, proposed: 1, failed: 1 });
+    ).toEqual({
+      searched: false,
+      factsRecalled: 0,
+      matched: 0,
+      updated: 1,
+      proposed: 1,
+      failed: 1,
+    });
   });
 
   it("reads a turn whose built-in calls all failed as unavailable", () => {
@@ -118,7 +125,7 @@ describe("memory is reported per source", () => {
         [call("memory_read", { memoryId: "m1" }, JSON.stringify(activeFact))],
         ["hindsight-code"]
       )
-    ).toEqual(["Hindsight memory: not used", "built-in memory: 1 fact used"]);
+    ).toEqual(["Hindsight memory: not used", "built-in memory: 1 fact recalled"]);
   });
 
   it("names both sources when both ran", () => {
@@ -136,7 +143,7 @@ describe("memory is reported per source", () => {
         ),
       })
     ).toBe(
-      "Findings via GPT-6.2 Sol · Hindsight memory: searched, 2 facts used · built-in memory: searched, nothing relevant · Bedrock cost: $0.05"
+      "Findings via GPT-6.2 Sol · Hindsight memory: searched, 2 facts recalled · built-in memory: searched, nothing relevant · Bedrock cost: $0.05"
     );
   });
 
