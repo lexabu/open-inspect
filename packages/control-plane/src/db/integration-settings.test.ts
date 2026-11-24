@@ -522,6 +522,19 @@ describe("IntegrationSettingsStore", () => {
       ).toBe(false);
     });
 
+    it("stores reviewOnApproval and rejects a non-boolean value", async () => {
+      await store.setRepoSettings("github", "acme/widgets", { reviewOnApproval: true });
+      expect(
+        (await store.getResolvedConfig("github", "acme/widgets")).settings.reviewOnApproval
+      ).toBe(true);
+
+      await expect(
+        store.setRepoSettings("github", "acme/widgets", {
+          reviewOnApproval: "yes" as unknown as boolean,
+        })
+      ).rejects.toThrow(IntegrationSettingsValidationError);
+    });
+
     it("stores commentOnlyReviews and rejects a non-boolean value", async () => {
       await store.setRepoSettings("github", "acme/widgets", { commentOnlyReviews: true });
       const config = await store.getResolvedConfig("github", "acme/widgets");

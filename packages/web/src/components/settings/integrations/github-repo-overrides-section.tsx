@@ -284,6 +284,10 @@ function RepoOverrideRow({
     if (entry.settings.commentOnlyReviews !== undefined) {
       settings.commentOnlyReviews = entry.settings.commentOnlyReviews;
     }
+    // Nor pre-merge reviews on approval.
+    if (entry.settings.reviewOnApproval !== undefined) {
+      settings.reviewOnApproval = entry.settings.reviewOnApproval;
+    }
 
     try {
       const res = await browserApiFetch(

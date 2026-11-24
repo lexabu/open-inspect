@@ -17,6 +17,7 @@ import {
   pullRequestOpenedPayloadSchema,
   reviewCommentPayloadSchema,
   reviewRequestedPayloadSchema,
+  reviewSubmittedPayloadSchema,
   webhookActionPayloadSchema,
   webhookSummaryPayloadSchema,
   type WebhookSummaryPayload,
@@ -24,9 +25,11 @@ import {
 import {
   handlePullRequestOpened,
   handleReviewRequested,
+  handleReviewApproved,
   handleIssueComment,
   handleReviewComment,
   isReviewRequestedForBot,
+  isApprovalReview,
   type HandlerResult,
 } from "./handlers";
 import { createKvCacheStore } from "@open-inspect/shared/cache-store";
@@ -326,6 +329,19 @@ function dispatchHandler(
         const parsed = issueCommentPayloadSchema.safeParse(payload);
         if (!parsed.success) throw new Error("Malformed issue_comment created payload");
         return handleIssueComment(env, log, parsed.data, traceId);
+      }
+      return Promise.resolve({
+        outcome: "skipped",
+        skip_reason: "unsupported_action",
+      });
+    case "pull_request_review":
+      if (p.action === "submitted") {
+        if (!isApprovalReview(payload)) {
+          return Promise.resolve({ outcome: "skipped", skip_reason: "review_not_approval" });
+        }
+        const parsed = reviewSubmittedPayloadSchema.safeParse(payload);
+        if (!parsed.success) throw new Error("Malformed pull_request_review submitted payload");
+        return handleReviewApproved(env, log, parsed.data, traceId);
       }
       return Promise.resolve({
         outcome: "skipped",

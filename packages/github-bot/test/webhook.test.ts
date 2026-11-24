@@ -7,6 +7,12 @@ vi.mock("../src/github-auth", () => ({
   postReaction: vi.fn().mockResolvedValue(true),
   postIssueComment: vi.fn().mockResolvedValue(true),
   checkSenderPermission: vi.fn().mockResolvedValue({ hasPermission: true }),
+  listPullRequestReviews: vi.fn().mockResolvedValue([]),
+  getPullRequestState: vi.fn().mockResolvedValue({
+    state: "open",
+    draft: false,
+    headSha: "a".repeat(40),
+  }),
 }));
 
 import app from "../src/index";
@@ -240,14 +246,146 @@ describe("POST /webhooks/github", () => {
     });
   });
 
+  it.each([
+    ["changes_requested", "a minimal"],
+    ["approved", "a malformed"],
+  ])("handles a %s review in %s payload without starting a session", async (state) => {
+    const body = JSON.stringify({
+      action: "submitted",
+      review: { id: 5680, state },
+      pull_request: { number: 42 },
+      repository: { id: 99, name: "repo", owner: { login: "test" } },
+      sender: { id: 7, login: "alice", type: "User" },
+    });
+    const signature = await sign(SECRET, body);
+    const env = makeEnv();
+    const ctx = makeCtx();
+
+    await app.fetch(
+      new Request("http://localhost/webhooks/github", {
+        method: "POST",
+        body,
+        headers: {
+          "X-Hub-Signature-256": signature,
+          "X-GitHub-Event": "pull_request_review",
+          "X-GitHub-Delivery": `delivery-review-${state}`,
+        },
+      }),
+      env,
+      ctx
+    );
+
+    await flushWaitUntil(ctx);
+    expect(
+      vi
+        .mocked(env.CONTROL_PLANE.fetch)
+        .mock.calls.some(([url]) => String(url) === "https://internal/sessions")
+    ).toBe(false);
+  });
+
+  it("queues Autofix and starts one pre-merge review for a signed approval, once per delivery", async () => {
+    const head = "a".repeat(40);
+    const body = JSON.stringify({
+      action: "submitted",
+      review: {
+        id: 5681,
+        state: "approved",
+        commit_id: head,
+        user: { login: "bob", type: "User" },
+      },
+      pull_request: {
+        number: 42,
+        title: "Add caching",
+        body: null,
+        user: { login: "alice" },
+        head: { ref: "feature/cache", sha: head },
+        base: { ref: "main", sha: "b".repeat(40) },
+        draft: false,
+        state: "open",
+      },
+      repository: { id: 99, owner: { login: "test" }, name: "repo", private: false },
+      sender: {
+        login: "bob",
+        id: 1002,
+        avatar_url: "https://avatars.githubusercontent.com/u/1002",
+      },
+    });
+    const signature = await sign(SECRET, body);
+    const env = makeEnv();
+    const cpFetch = vi.mocked(env.CONTROL_PLANE.fetch);
+    cpFetch.mockImplementation(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes("/integration-settings/github/resolved/")) {
+        return Response.json({
+          config: {
+            model: null,
+            reasoningEffort: null,
+            reviewOnApproval: true,
+            autoReviewOnOpen: true,
+            enabledRepos: null,
+            allowedTriggerUsers: null,
+            codeReviewInstructions: null,
+            commentActionInstructions: null,
+          },
+        });
+      }
+      if (requestUrl.startsWith("https://internal/github/route?")) {
+        return Response.json({ teamId: null, via: "workspace" });
+      }
+      if (requestUrl.endsWith("/metadata")) {
+        return Response.json({ repo: "test/repo", metadata: null });
+      }
+      if (requestUrl === "https://internal/sessions") {
+        return Response.json({ sessionId: "session-approve", status: "created" });
+      }
+      if (requestUrl.endsWith("/prompt")) {
+        return Response.json({ messageId: "message-approve" });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const deliver = async () => {
+      const ctx = makeCtx();
+      await app.fetch(
+        new Request("http://localhost/webhooks/github", {
+          method: "POST",
+          body,
+          headers: {
+            "X-Hub-Signature-256": signature,
+            "X-GitHub-Event": "pull_request_review",
+            "X-GitHub-Delivery": "delivery-approval-5681",
+          },
+        }),
+        env,
+        ctx
+      );
+      await flushWaitUntil(ctx);
+    };
+    const sessionsCreated = () =>
+      cpFetch.mock.calls.filter(([url]) => String(url) === "https://internal/sessions").length;
+
+    await deliver();
+    expect(env.AUTOFIX_QUEUE.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "pull_request_review",
+        deliveryId: "delivery-approval-5681",
+      })
+    );
+    expect(sessionsCreated()).toBe(1);
+    const prompt = cpFetch.mock.calls.find(([url]) => String(url).endsWith("/prompt"));
+    expect(JSON.parse(String(prompt?.[1]?.body)).content).toContain("## Pre-merge Review");
+
+    await deliver();
+    expect(sessionsCreated()).toBe(1);
+  });
+
   it("does not queue individual review comment webhooks", async () => {
     const body = JSON.stringify({
       action: "created",
       pull_request: {
         number: 42,
         title: "Handle nullable input",
-        head: { ref: "feature/nulls", sha: "abc123" },
-        base: { ref: "main" },
+        head: { ref: "feature/nulls", sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        base: { ref: "main", sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
       },
       comment: {
         id: 5679,
@@ -377,7 +515,11 @@ describe("POST /webhooks/github", () => {
   it("keys forwarded ready_for_review events by delivery id", async () => {
     const body = JSON.stringify({
       action: "ready_for_review",
-      pull_request: { number: 42, draft: false, head: { ref: "feature", sha: "abc123" } },
+      pull_request: {
+        number: 42,
+        draft: false,
+        head: { ref: "feature", sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      },
       repository: { id: 99, name: "repo", private: false, owner: { login: "test" } },
       sender: { id: 7, login: "alice", type: "User" },
     });
@@ -404,14 +546,18 @@ describe("POST /webhooks/github", () => {
       .mocked(env.CONTROL_PLANE.fetch)
       .mock.calls.find(([url]) => url === "https://internal/internal/github-event");
     expect(JSON.parse(String(forwarded?.[1]?.body)).triggerKey).toBe(
-      "pr:42:ready_for_review:abc123:delivery-ready-1"
+      "pr:42:ready_for_review:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:delivery-ready-1"
     );
   });
 
   it("forwards whether the sender is a bot", async () => {
     const body = JSON.stringify({
       action: "opened",
-      pull_request: { number: 42, draft: false, head: { ref: "feature", sha: "abc123" } },
+      pull_request: {
+        number: 42,
+        draft: false,
+        head: { ref: "feature", sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      },
       repository: { id: 99, name: "repo", private: false, owner: { login: "test" } },
       sender: { id: 8, login: "open-inspect[bot]", type: "Bot" },
     });
@@ -517,8 +663,8 @@ describe("POST /webhooks/github", () => {
         title: "Bound GitHub requests",
         body: null,
         user: { login: "alice" },
-        head: { ref: "feature/timeouts", sha: "abc123" },
-        base: { ref: "main" },
+        head: { ref: "feature/timeouts", sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        base: { ref: "main", sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
       },
       requested_reviewer: { login: "test-bot[bot]" },
       repository: { id: 99, owner: { login: "test" }, name: "repo", private: false },
@@ -634,8 +780,8 @@ describe("POST /webhooks/github", () => {
           title: "Requires stable repository identity",
           body: null,
           user: { login: "alice" },
-          head: { ref: "feature/test", sha: "abc123" },
-          base: { ref: "main" },
+          head: { ref: "feature/test", sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+          base: { ref: "main", sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
         },
         requested_reviewer: { login: "test-bot[bot]" },
         repository: { id: repositoryId, owner: { login: "test" }, name: "repo", private: false },
@@ -684,8 +830,8 @@ describe("POST /webhooks/github", () => {
           title: "Refused session",
           body: null,
           user: { login: "alice" },
-          head: { ref: "feature/test", sha: "abc123" },
-          base: { ref: "main" },
+          head: { ref: "feature/test", sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+          base: { ref: "main", sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
         },
         requested_reviewer: { login: "test-bot[bot]" },
         repository: { id: 99, owner: { login: "test" }, name: "repo", private: false },
@@ -1176,8 +1322,8 @@ describe("POST /webhooks/github", () => {
         title: "Broken payload",
         body: null,
         user: { login: "alice" },
-        head: { ref: "feature/test", sha: "abc123" },
-        base: { ref: "main" },
+        head: { ref: "feature/test", sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        base: { ref: "main", sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
         draft: false,
       },
       repository: { id: 99, owner: { login: "test" }, name: "repo" },
@@ -1271,7 +1417,11 @@ describe("POST /webhooks/github", () => {
         closed_at: "2026-07-14T11:00:00Z",
         user: { login: "alice" },
         labels: [{ name: "ready" }],
-        head: { ref: "feature/lifecycle", sha: "abc123", repo: { id: 99 } },
+        head: {
+          ref: "feature/lifecycle",
+          sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          repo: { id: 99 },
+        },
         base: { ref: "main", repo: { id: 99 } },
       },
     });
@@ -1314,7 +1464,7 @@ describe("POST /webhooks/github", () => {
         state: "closed",
         draft: false,
         merged: true,
-        headSha: "abc123",
+        headSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         isCrossRepository: false,
         url: "https://github.com/test/repo/pull/42",
         repositoryExternalId: "99",

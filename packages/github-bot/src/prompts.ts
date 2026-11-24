@@ -69,6 +69,20 @@ reviewers' comments on this PR. Start your review body with the line \`**Reviewe
 `;
 }
 
+function buildPreMergeSection(
+  preMerge: boolean,
+  headSha: string,
+  reviewer: ReviewerContext | null
+): string {
+  if (!preMerge) return "";
+  const earlier = reviewer ? "your own earlier review (same reviewer line)" : "your earlier review";
+  return `
+## Pre-merge Review
+A maintainer approved commit \`${headSha}\`. This is the last review before merge. If ${earlier}
+is on this PR, say which of its findings are now resolved, and repeat only what is still open or new.
+`;
+}
+
 export function buildCodeReviewPrompt(params: {
   owner: string;
   repo: string;
@@ -83,6 +97,12 @@ export function buildCodeReviewPrompt(params: {
   isSelfReview?: boolean;
   reviewer?: ReviewerContext | null;
   commentOnlyReviews?: boolean;
+  /** The head commit under review; the checkout, diff and submitted review all use it. */
+  headSha: string;
+  /** The base branch commit the head is diffed against. */
+  baseSha: string;
+  /** The pass a human approval starts right before merge. */
+  preMerge?: boolean;
 }): string {
   const {
     owner,
@@ -98,6 +118,9 @@ export function buildCodeReviewPrompt(params: {
     isSelfReview = false,
     reviewer = null,
     commentOnlyReviews = false,
+    headSha,
+    baseSha,
+    preMerge = false,
   } = params;
   // Reviewers share one GitHub App identity, so a later APPROVE would clear an
   // earlier REQUEST_CHANGES; with several reviewers each one only comments.
@@ -146,9 +169,21 @@ ${prAuthorBlock}
 ${prBranchesBlock}
 - **Description**:
 ${prDescriptionBlock}
-${buildIndependentReviewerSection(reviewer)}
+${buildIndependentReviewerSection(reviewer)}${buildPreMergeSection(preMerge, headSha, reviewer)}
 ## Instructions
-1. Run \`gh pr diff ${number}\` to see the full diff
+1. Review commit \`${headSha}\` exactly, even if the PR branch has moved on. Check it out, then
+   read its diff from GitHub (this needs no local history, so it works in a shallow clone):
+
+   git fetch --no-tags origin ${headSha} || git fetch --no-tags origin pull/${number}/head
+   git checkout --detach ${headSha}
+   gh api -H "Accept: application/vnd.github.diff" repos/${repositoryPath}/compare/${baseSha}...${headSha}
+
+   If you cannot read that diff, stop: do not review from anything else, give no verdict and
+   submit no pull request review (a review would mark the commit reviewed). Instead post one PR
+   conversation comment saying the diff for commit \`${headSha}\` could not be read:
+
+   gh api repos/${repositoryPath}/issues/${number}/comments --method POST -f body='<that note>'
+
 2. Review the changes thoroughly, focusing on:
    - Correctness and potential bugs
    - Security concerns
@@ -165,6 +200,7 @@ ${buildIndependentReviewerSection(reviewer)}
 {
   "body": "<your review summary>",
   "event": "${reviewEvent}",
+  "commit_id": "${headSha}",
   "comments": [
     {
       "path": "<file path>",

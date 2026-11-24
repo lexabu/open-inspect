@@ -2,12 +2,14 @@ import type {
   Env,
   PullRequestOpenedPayload,
   ReviewRequestedPayload,
+  ReviewSubmittedPayload,
   IssueCommentPayload,
   ReviewCommentPayload,
 } from "./types";
 import type { Logger } from "./logger";
-import { buildCodeReviewPrompt, buildCommentActionPrompt } from "./prompts";
-import { requestedReviewerPayloadSchema } from "./payload-schemas";
+import { buildCodeReviewPrompt, buildCommentActionPrompt, type ReviewerContext } from "./prompts";
+import type { ResolvedGitHubConfig } from "./utils/integration-config";
+import { requestedReviewerPayloadSchema, reviewStatePayloadSchema } from "./payload-schemas";
 import {
   containsBotMention,
   isBotLogin,
@@ -27,6 +29,40 @@ export function isReviewRequestedForBot(payload: unknown, botUsername: string): 
   const parsed = requestedReviewerPayloadSchema.safeParse(payload);
   if (!parsed.success) return false;
   return isBotLogin(parsed.data.requested_reviewer?.login, botUsername);
+}
+
+/** The review prompt for a PR, pinned to its head and base commits. */
+function reviewPromptFor(
+  env: Env,
+  repo: ReviewRequestedPayload["repository"],
+  pr: ReviewRequestedPayload["pull_request"],
+  preMerge: boolean
+): (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string {
+  return (config, reviewer) =>
+    buildCodeReviewPrompt({
+      owner: repo.owner.login,
+      repo: repo.name,
+      number: pr.number,
+      title: pr.title,
+      body: pr.body,
+      author: pr.user.login,
+      base: pr.base.ref,
+      head: pr.head.ref,
+      headSha: pr.head.sha,
+      baseSha: pr.base.sha,
+      isPublic: !repo.private,
+      codeReviewInstructions: config.codeReviewInstructions,
+      isSelfReview: isAuthoredByBot(pr, env),
+      reviewer,
+      commentOnlyReviews: config.commentOnlyReviews,
+      preMerge,
+    });
+}
+
+/** Only approvals start the pre-merge review; other review states are not parsed further. */
+export function isApprovalReview(payload: unknown): boolean {
+  const parsed = reviewStatePayloadSchema.safeParse(payload);
+  return parsed.success && parsed.data.review?.state.toLowerCase() === "approved";
 }
 
 export async function handleReviewRequested(
@@ -52,22 +88,53 @@ export async function handleReviewRequested(
     title: `GitHub: Review PR #${pr.number}`,
     action: "review",
     reactionPath: `issues/${pr.number}`,
-    buildPrompt: (config, reviewer) =>
-      buildCodeReviewPrompt({
-        owner: repo.owner.login,
-        repo: repo.name,
-        number: pr.number,
-        title: pr.title,
-        body: pr.body,
-        author: pr.user.login,
-        base: pr.base.ref,
-        head: pr.head.ref,
-        isPublic: !repo.private,
-        codeReviewInstructions: config.codeReviewInstructions,
-        isSelfReview: isAuthoredByBot(pr, env),
-        reviewer,
-        commentOnlyReviews: config.commentOnlyReviews,
-      }),
+    buildPrompt: reviewPromptFor(env, repo, pr, false),
+  });
+}
+
+/**
+ * The pre-merge review: a human approval of the PR's current head starts one more
+ * review, unless the bot has already reviewed that commit. Branch rules that dismiss
+ * stale approvals make the last approval land on the code that merges.
+ */
+export async function handleReviewApproved(
+  env: Env,
+  log: Logger,
+  payload: ReviewSubmittedPayload,
+  traceId: string
+): Promise<HandlerResult> {
+  const { review, pull_request: pr, repository: repo, sender } = payload;
+  const skip = (skip_reason: string): HandlerResult => {
+    log.debug("handler.approval_review_skipped", {
+      trace_id: traceId,
+      pull_number: pr.number,
+      skip_reason,
+    });
+    return { outcome: "skipped", skip_reason };
+  };
+
+  if (!isApprovalReview(payload)) return skip("review_not_approval");
+  if (review.user.type === "Bot" || isBotLogin(review.user.login, env.GITHUB_BOT_USERNAME)) {
+    return skip("bot_approval");
+  }
+  // GitHub never counts an author's own approval toward merging.
+  if (review.user.login.toLowerCase() === pr.user.login.toLowerCase()) {
+    return skip("self_approval");
+  }
+  if (pr.state !== "open") return skip("pr_not_open");
+  if (pr.draft) return skip("draft_pr");
+  // An approval of an older commit is stale; the next approval on the head will run.
+  if (review.commit_id !== pr.head.sha) return skip("approval_not_on_head");
+
+  return startSession(env, log, traceId, {
+    repository: repo,
+    sender,
+    pullNumber: pr.number,
+    title: `GitHub: Pre-merge review PR #${pr.number}`,
+    action: "approval_review",
+    reactionPath: `issues/${pr.number}`,
+    preMergeCommit: review.commit_id,
+    buildPrompt: reviewPromptFor(env, repo, pr, true),
   });
 }
 
@@ -91,22 +158,7 @@ export async function handlePullRequestOpened(
     title: `GitHub: Review PR #${pr.number}`,
     action: "auto_review",
     reactionPath: `issues/${pr.number}`,
-    buildPrompt: (config, reviewer) =>
-      buildCodeReviewPrompt({
-        owner: repo.owner.login,
-        repo: repo.name,
-        number: pr.number,
-        title: pr.title,
-        body: pr.body,
-        author: pr.user.login,
-        base: pr.base.ref,
-        head: pr.head.ref,
-        isPublic: !repo.private,
-        codeReviewInstructions: config.codeReviewInstructions,
-        isSelfReview: isAuthoredByBot(pr, env),
-        reviewer,
-        commentOnlyReviews: config.commentOnlyReviews,
-      }),
+    buildPrompt: reviewPromptFor(env, repo, pr, false),
   });
 }
 

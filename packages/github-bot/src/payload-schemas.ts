@@ -25,6 +25,9 @@ const webhookNumberedObjectSchema = z.object({
   number: z.number().optional(),
 });
 
+// SHA-1 repositories use 40 hex characters, SHA-256 repositories 64.
+const commitShaSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+
 const pullRequestSchema = z.object({
   number: z.number(),
   title: z.string(),
@@ -34,17 +37,36 @@ const pullRequestSchema = z.object({
   base: z.object({ ref: z.string() }),
 });
 
+/** A PR a review runs on: its head and base commits pin what is checked out and diffed. */
+const reviewedPullRequestSchema = pullRequestSchema.extend({
+  head: z.object({ ref: z.string(), sha: commitShaSchema }),
+  base: z.object({ ref: z.string(), sha: commitShaSchema }),
+});
+
 export const pullRequestOpenedPayloadSchema = z.object({
   action: z.literal("opened"),
-  pull_request: pullRequestSchema.extend({ draft: z.boolean() }),
+  pull_request: reviewedPullRequestSchema.extend({ draft: z.boolean() }),
   repository: repositorySchema,
   sender: githubSenderSchema,
 });
 
 export const reviewRequestedPayloadSchema = z.object({
   action: z.literal("review_requested"),
-  pull_request: pullRequestSchema,
+  pull_request: reviewedPullRequestSchema,
   requested_reviewer: githubUserSchema.nullable().optional(),
+  repository: repositorySchema,
+  sender: githubSenderSchema,
+});
+
+export const reviewSubmittedPayloadSchema = z.object({
+  action: z.literal("submitted"),
+  review: z.object({
+    // Webhook review states are lowercase: approved, changes_requested, commented.
+    state: z.string(),
+    commit_id: commitShaSchema,
+    user: githubUserSchema.extend({ type: z.string().optional() }),
+  }),
+  pull_request: reviewedPullRequestSchema.extend({ draft: z.boolean(), state: z.string() }),
   repository: repositorySchema,
   sender: githubSenderSchema,
 });
@@ -97,6 +119,12 @@ export const requestedReviewerPayloadSchema = z
   })
   .passthrough();
 
+export const reviewStatePayloadSchema = z
+  .object({
+    review: z.object({ state: z.string() }).nullable().optional(),
+  })
+  .passthrough();
+
 export const webhookActionPayloadSchema = z
   .object({
     action: z.unknown().optional(),
@@ -105,6 +133,7 @@ export const webhookActionPayloadSchema = z
 
 export type PullRequestOpenedPayload = z.infer<typeof pullRequestOpenedPayloadSchema>;
 export type ReviewRequestedPayload = z.infer<typeof reviewRequestedPayloadSchema>;
+export type ReviewSubmittedPayload = z.infer<typeof reviewSubmittedPayloadSchema>;
 export type IssueCommentPayload = z.infer<typeof issueCommentPayloadSchema>;
 export type ReviewCommentPayload = z.infer<typeof reviewCommentPayloadSchema>;
 export type WebhookSummaryPayload = z.infer<typeof webhookSummaryPayloadSchema>;

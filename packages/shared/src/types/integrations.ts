@@ -95,6 +95,12 @@ export const githubBotSettingsSchema = z.strictObject({
    * or wherever branch protection should never see the bot's verdict).
    */
   commentOnlyReviews: z.boolean().optional(),
+  /**
+   * A human approval starts one more review, the pre-merge pass, unless the bot has
+   * already reviewed the approved head commit. With branch rules that dismiss stale
+   * approvals, the last approval is always on the code that merges.
+   */
+  reviewOnApproval: z.boolean().optional(),
   allowedTriggerUsers: z.array(z.string()).optional(),
   codeReviewInstructions: z.string().optional(),
   commentActionInstructions: z.string().optional(),

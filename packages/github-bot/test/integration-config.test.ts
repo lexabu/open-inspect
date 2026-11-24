@@ -59,6 +59,7 @@ describe("getGitHubConfig", () => {
       reasoningEffort: "high",
       reviewers: null,
       commentOnlyReviews: false,
+      reviewOnApproval: false,
       autoReviewOnOpen: true,
       enabledRepos: null,
       allowedTriggerUsers: null,
@@ -96,6 +97,36 @@ describe("getGitHubConfig", () => {
     const result = await getGitHubConfig(env, "acme/widgets", createMockLogger());
 
     expect(result.commentOnlyReviews).toBe(expected);
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
+    [undefined, false],
+  ])("reads reviewOnApproval %s from the control plane as %s", async (sent, expected) => {
+    const env = createMockEnv(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            config: {
+              model: null,
+              reasoningEffort: null,
+              ...(sent === undefined ? {} : { reviewOnApproval: sent }),
+              autoReviewOnOpen: true,
+              enabledRepos: null,
+              allowedTriggerUsers: null,
+              codeReviewInstructions: null,
+              commentActionInstructions: null,
+            },
+          }),
+          { status: 200 }
+        )
+      )
+    );
+
+    const result = await getGitHubConfig(env, "acme/widgets", createMockLogger());
+
+    expect(result.reviewOnApproval).toBe(expected);
   });
 
   it("parses a reviewer list from a successful response", async () => {
@@ -233,6 +264,7 @@ describe("getGitHubConfig", () => {
       reasoningEffort: null,
       reviewers: null,
       commentOnlyReviews: false,
+      reviewOnApproval: false,
       autoReviewOnOpen: false,
       enabledRepos: ["acme/widgets"],
       allowedTriggerUsers: ["octocat"],
@@ -255,6 +287,7 @@ describe("getGitHubConfig", () => {
       reasoningEffort: null,
       reviewers: null,
       commentOnlyReviews: true,
+      reviewOnApproval: false,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -279,6 +312,7 @@ describe("getGitHubConfig", () => {
       reasoningEffort: null,
       reviewers: null,
       commentOnlyReviews: true,
+      reviewOnApproval: false,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -303,6 +337,7 @@ describe("getGitHubConfig", () => {
       reasoningEffort: null,
       reviewers: null,
       commentOnlyReviews: true,
+      reviewOnApproval: false,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -332,6 +367,7 @@ describe("getGitHubConfig", () => {
       reasoningEffort: null,
       reviewers: null,
       commentOnlyReviews: true,
+      reviewOnApproval: false,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -359,6 +395,7 @@ describe("getGitHubConfig", () => {
       reasoningEffort: null,
       reviewers: null,
       commentOnlyReviews: true,
+      reviewOnApproval: false,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -381,6 +418,7 @@ describe("getGitHubConfig", () => {
       reasoningEffort: null,
       reviewers: null,
       commentOnlyReviews: false,
+      reviewOnApproval: false,
       autoReviewOnOpen: true,
       enabledRepos: null,
       allowedTriggerUsers: null,
