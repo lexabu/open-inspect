@@ -243,3 +243,36 @@ describe("a run closed as Superseded must have been superseded", () => {
     }
   });
 });
+
+describe("the newest check run on a head never passes by being neutral", () => {
+  it("asks for a review when the base branch changes while a review is starting", async () => {
+    const h = harness();
+    // The retarget lands after the attempt is claimed and before its check run exists.
+    const create = h.sessions.create;
+    h.sessions.create = async (reviewer) => {
+      const sessionId = await create(reviewer);
+      await h.change("base");
+      return sessionId;
+    };
+
+    expect(await h.start()).toEqual({ outcome: "skipped", reason: "superseded" });
+    expect(h.sessions.prompted).toEqual([]);
+
+    // The start's run is created after the "base changed" run, so it is the one that counts.
+    expect(h.world.checks.at(-1)?.states.at(-1)).toMatchObject({
+      status: "completed",
+      conclusion: "action_required",
+    });
+  });
+
+  it("keeps the running review's check in progress when the base-change check cannot be posted", async () => {
+    const h = harness();
+    await started(h);
+    h.world.createFails = true;
+
+    await expect(h.change("base")).rejects.toThrow("could not be written");
+
+    // Closed as Superseded with nothing newer to replace it, it would pass a required check.
+    expect(h.latest(1)).not.toMatchObject({ conclusion: "neutral" });
+  });
+});

@@ -150,7 +150,7 @@ describe("starting a gated review", () => {
     });
   });
 
-  it.each(["review_in_progress", "stale_head", "stale_base", "draft_pr"] as const)(
+  it.each(["review_in_progress", "stale_head", "stale_base", "superseded", "draft_pr"] as const)(
     "passes on the control plane's %s",
     async (reason) => {
       const { env, gateCalls } = createEnv({ reviews: { outcome: "skipped", reason } });

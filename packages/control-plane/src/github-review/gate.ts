@@ -186,6 +186,22 @@ export class ReviewGate {
         log.error("github_review.check_create_failed", { attempt: attempt.id });
       } else {
         await store.setCheckRun(attempt.id, checkRunId);
+        // An override or a base change may have superseded the attempt before its check
+        // run was on record. That run is then newer than whatever replaced the attempt
+        // posted, so it is the one that counts on the head and must not pass: it asks
+        // for a review, and no reviewer is prompted. Once the run is on record,
+        // whatever supersedes the attempt closes it itself.
+        if ((await store.getAttempt(attempt.id))?.status === "superseded") {
+          const state = needsReview(
+            mode,
+            pull.headSha,
+            "This review was replaced while it started."
+          );
+          if (!(await github.updateCheck(checkRunId, state))) {
+            log.error("github_review.check_close_failed", { attempt: attempt.id });
+          }
+          return { outcome: "skipped", reason: "superseded" };
+        }
       }
       started = await Promise.all(
         created.map(async ({ reviewer, sessionId, nonce }) => ({
@@ -206,11 +222,6 @@ export class ReviewGate {
         }
       }
       throw error;
-    }
-    // An override or a base change may have superseded the attempt before its check run
-    // was on record, and so without closing it.
-    if (checkRunId !== null && (await store.getAttempt(attempt.id))?.status === "superseded") {
-      await this.closeSuperseded(github, [{ id: attempt.id, checkRunId }]);
     }
     log.info("github_review.started", {
       attempt: attempt.id,
@@ -250,15 +261,18 @@ export class ReviewGate {
         return ask(`The AI review did not start (${request.detail ?? "unknown reason"}).`);
       }
       case "base":
-      case "reopened":
+      case "reopened": {
         // The evidence was reached against another base branch, or before the pull
-        // request was closed; none of it carries over.
-        await this.closeSuperseded(github, await store.invalidate(pullKey, this.deps.now()));
-        return ask(
+        // request was closed; none of it carries over. The new check is posted first:
+        // a superseded run is only closed once something newer stands on the head.
+        const asked = await ask(
           request.change === "base"
             ? `The base branch changed to \`${pull.baseRef}\`.`
             : "The pull request was reopened."
         );
+        await this.closeSuperseded(github, await store.invalidate(pullKey, this.deps.now()));
+        return asked;
+      }
       case "head": {
         if (pull.headSha !== request.headSha) return { outcome: "skipped", reason: "stale_head" };
         // A review of this very head is under way (a late delivery, or a review asked

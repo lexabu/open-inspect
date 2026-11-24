@@ -72,6 +72,7 @@ export const startGateReviewResponseSchema = z.discriminatedUnion("outcome", [
       "draft_pr",
       "stale_head",
       "stale_base",
+      "superseded",
     ]),
   }),
 ]);
