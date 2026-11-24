@@ -106,6 +106,8 @@ export const githubBotSettingsSchema = z.strictObject({
    * or wherever branch protection should never see the bot's verdict).
    */
   commentOnlyReviews: z.boolean().optional(),
+  /** Reviews end with one line listing the bot's comment commands; absent means off. */
+  reviewTip: z.boolean().optional(),
   /** The `AI Review` merge-gate check; absent means off. */
   mergeGate: githubMergeGateSchema.optional(),
   allowedTriggerUsers: z.array(z.string()).optional(),

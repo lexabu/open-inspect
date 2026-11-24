@@ -211,7 +211,8 @@ export class AutofixService {
     private readonly settings: AutofixSettingsResolver,
     private readonly github: GitHubAutofixProvider,
     private readonly sessions: SessionClient,
-    private readonly botUsername: string,
+    /** The bot's login, and the short command that also calls it, if any. */
+    private readonly bot: { username: string; command: string | null },
     private readonly now: () => number,
     private readonly resolveCredentialScope: (sessionId: string) => Promise<CredentialScope>
   ) {}
@@ -337,7 +338,9 @@ export class AutofixService {
             ...feedbackLocation,
             providerObject: { kind: "review", id: envelope.providerObject.id },
           };
-    const feedback = await this.github.getPullRequestFeedback(feedbackConfig, credentialScope);
+    const feedback = this.withoutBotCalls(
+      await this.github.getPullRequestFeedback(feedbackConfig, credentialScope)
+    );
     await this.feedbackStore.attachContext(receipt.feedbackKey, {
       artifactId: owner.artifactId,
       sessionId: owner.sessionId,
@@ -446,6 +449,24 @@ export class AutofixService {
     }
   }
 
+  /**
+   * A review without its inline comments that call the bot: the bot handles each of those
+   * as a command, so Autofix must not act on them too. The review's other feedback stays.
+   * The app's own reviews keep every comment: the bot never takes its own as a command.
+   */
+  private withoutBotCalls(feedback: GitHubPullRequestFeedback): GitHubPullRequestFeedback {
+    const { username, command } = this.bot;
+    if (feedback.kind !== "review" || isBotLogin(feedback.author.login, username)) {
+      return feedback;
+    }
+    return {
+      ...feedback,
+      comments: feedback.comments.filter(
+        (comment) => !containsBotMention(comment.body, username, command)
+      ),
+    };
+  }
+
   private async ineligibilityReason(
     feedback: GitHubPullRequestFeedback,
     settings: ResolvedGitHubAutofixSettings,
@@ -455,7 +476,7 @@ export class AutofixService {
   ): Promise<string | null> {
     const authorType = feedback.author.type.toLowerCase();
     const authorLogin = feedback.author.login.toLowerCase();
-    if (authorType === "bot" && isBotLogin(authorLogin, this.botUsername)) {
+    if (authorType === "bot" && isBotLogin(authorLogin, this.bot.username)) {
       if (feedback.kind !== "review") return "bot_pr_comment";
       if (!settings.openInspectReviewsEnabled) return "own_reviews_disabled";
       if (
@@ -466,7 +487,10 @@ export class AutofixService {
         return "own_review_replies";
       }
     } else if (authorType === "user") {
-      if (feedback.kind === "pr_comment" && containsBotMention(feedback.body, this.botUsername)) {
+      if (
+        feedback.kind === "pr_comment" &&
+        containsBotMention(feedback.body, this.bot.username, this.bot.command)
+      ) {
         return "explicit_mention";
       }
       const canWrite = await this.github.hasPullRequestWritePermission(

@@ -3,8 +3,7 @@
  * pull request passes the head's AI Review check, on the record.
  */
 import { createKvCacheStore } from "@open-inspect/shared/cache-store";
-import { botHandle, containsBotMention } from "@open-inspect/shared/github-mention";
-import { escapeRegExp } from "@open-inspect/shared/regex";
+import { botHandle, lineCommands } from "@open-inspect/shared/github-mention";
 import type { Env } from "./types";
 import type { Logger } from "./logger";
 import { checkSenderPermission, postIssueComment, postReaction } from "./github-auth";
@@ -22,29 +21,29 @@ export interface OverrideCommand {
   reason: string;
 }
 
+/** The command after the trigger: `override`, then the commit, then the end or a space. */
+const OVERRIDE = /^[ \t]+override[ \t]+([0-9a-f]{7,64})(?=[ \t]|$)/i;
+
 /**
- * The override in a comment: a line of its own, outside code fences, that reads
- * `@bot override <commit> <reason>`. Anything looser is not a command, so a request in
- * prose ("@bot override the retry limit for this client") stays a request to the bot.
+ * The override in a comment: a command line (see `lineCommands`) that reads
+ * `<trigger> override <commit> <reason>`, where the trigger is `@bot` or the bot's short
+ * command. Anything looser is not a command, so a request in prose ("@bot override the
+ * retry limit for this client") stays a request to the bot, and one in an HTML comment,
+ * code, a quote or `<details>` is never read.
  */
-export function parseOverrideCommand(body: string, botUsername: string): OverrideCommand | null {
-  if (!containsBotMention(body, botUsername)) return null;
-  const command = new RegExp(
-    `^@${escapeRegExp(botHandle(botUsername))}(?:\\[bot\\])?[ \\t]+override[ \\t]+([0-9a-f]{7,64})(?:[ \\t]+(.*))?$`,
-    "i"
-  );
-  let fenced = false;
-  for (const line of body.split("\n")) {
-    const text = line.trim();
-    if (/^(?:```|~~~)/.test(text)) {
-      fenced = !fenced;
-      continue;
-    }
-    const match = fenced ? null : command.exec(text);
-    if (match) {
+export function parseOverrideCommand(
+  body: string,
+  botUsername: string,
+  botCommand: string | undefined
+): OverrideCommand | null {
+  for (const rest of lineCommands(body, botUsername, botCommand)) {
+    const match = OVERRIDE.exec(rest);
+    // The reason is read on its own, so a long run of spaces is scanned once.
+    const reason = match ? rest.slice(match[0].length) : "";
+    if (match && !/[\u2028\u2029]/.test(reason)) {
       return {
         commit: match[1].toLowerCase(),
-        reason: (match[2] ?? "").trim().slice(0, MAX_OVERRIDE_REASON_LENGTH),
+        reason: reason.trim().slice(0, MAX_OVERRIDE_REASON_LENGTH),
       };
     }
   }

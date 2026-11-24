@@ -36,6 +36,7 @@ export const baseConfig: ResolvedGitHubConfig = {
   reasoningEffort: null,
   reviewers: null,
   commentOnlyReviews: false,
+  reviewTip: false,
   mergeGate: "required",
   autoReviewOnOpen: true,
   enabledRepos: null,

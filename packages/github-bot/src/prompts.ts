@@ -1,5 +1,6 @@
 import { encodeRepositoryPathSegments } from "@open-inspect/shared/types/repositories";
 import { ADVISORY_APPROVE_MARKER } from "@open-inspect/shared/github-review-verdict";
+import { REVIEW_FOCUS_AREAS, type ReviewFocus, type ReviewFocusArea } from "./comment-command";
 
 /**
  * The closing section for comment-only repositories. It comes after any custom
@@ -38,9 +39,9 @@ function buildUntrustedUserContentBlock(params: {
   content: string;
 }): string {
   const { source, author, content } = params;
-  const escapedContent = content
-    .replaceAll("<user_content", "<\\user_content")
-    .replaceAll("</user_content>", "<\\/user_content>");
+  // Any tag-like `<user_content` or `</user_content` (spaces and case aside) loses its
+  // shape, so the content can neither close this block nor open another.
+  const escapedContent = content.replace(/<(?=\s*\/?\s*user_content)/gi, "<\\");
 
   return `<user_content source="${source}" author="${author}">
 ${escapedContent}
@@ -83,6 +84,61 @@ is on this PR, say which of its findings are now resolved, and repeat only what 
 `;
 }
 
+const FOCUS_AREAS: Record<ReviewFocusArea, string> = {
+  security:
+    "security: authentication, authorization, injection, secrets, and unsafe handling of untrusted input",
+  performance:
+    "performance: algorithmic cost, needless I/O or queries, memory use, and work on hot paths",
+  bugs: "correctness bugs: logic errors, edge cases, error handling, and races",
+  tests: "tests: changed behavior without coverage, and tests that would still pass with the bug",
+};
+
+/** A focus a commenter asked a review for, which only they chose. */
+export interface FocusRequest {
+  focus: ReviewFocus;
+  requestedBy: string;
+}
+
+function buildFocusSection(request: FocusRequest | null): string {
+  if (!request) return "";
+  const { focus, requestedBy } = request;
+  const asked = `@${requestedBy} asked for this review`;
+  const still =
+    "This is their request, not a repository rule: still review the whole change, but look hardest there and lead with those findings.";
+  if (focus.kind === "area") {
+    return `
+## Focus
+${asked} to focus on ${FOCUS_AREAS[focus.area]}. ${still}
+`;
+  }
+  return `
+## Focus
+${asked} with the focus below. ${still}
+${buildUntrustedUserContentBlock({ source: "github_review_focus", author: requestedBy, content: focus.text })}
+`;
+}
+
+/** The one line a review ends with to show how to call the bot, for repositories that want it. */
+export function buildReviewCommandTip(trigger: string, checkRerun: boolean): string {
+  const commands = [
+    `\`${trigger}\` (full review)`,
+    `\`${trigger} ${REVIEW_FOCUS_AREAS.join("|")}\``,
+    `\`${trigger} <question>\``,
+    ...(checkRerun ? ["Re-run on the AI Review check"] : []),
+  ];
+  return `Commands: ${commands.join(" · ")}`;
+}
+
+function buildCommandTipSection(tip: string | null): string {
+  if (!tip) return "";
+  return `
+## Command Tip
+End the review body with this line, exactly as written, on a line of its own (before the
+approval marker line, if the body ends with one):
+${tip}
+`;
+}
+
 export function buildCodeReviewPrompt(params: {
   owner: string;
   repo: string;
@@ -103,6 +159,10 @@ export function buildCodeReviewPrompt(params: {
   baseSha: string;
   /** A review asked for again on the head, right before merge. */
   preMerge?: boolean;
+  /** What the person who asked for the review wants it to look hardest at. */
+  focus?: FocusRequest | null;
+  /** The command tip line the review ends with, or null for none. */
+  commandTip?: string | null;
 }): string {
   const {
     owner,
@@ -121,6 +181,8 @@ export function buildCodeReviewPrompt(params: {
     headSha,
     baseSha,
     preMerge = false,
+    focus = null,
+    commandTip = null,
   } = params;
   // Reviewers share one GitHub App identity, so a later APPROVE would clear an
   // earlier REQUEST_CHANGES; with several reviewers each one only comments.
@@ -169,7 +231,7 @@ ${prAuthorBlock}
 ${prBranchesBlock}
 - **Description**:
 ${prDescriptionBlock}
-${buildIndependentReviewerSection(reviewer)}${buildPreMergeSection(preMerge, headSha, reviewer)}
+${buildIndependentReviewerSection(reviewer)}${buildPreMergeSection(preMerge, headSha, reviewer)}${buildFocusSection(focus)}
 ## Instructions
 1. Review commit \`${headSha}\` exactly, even if the PR branch has moved on. Check it out, then
    read its diff from GitHub (this needs no local history, so it works in a shallow clone):
@@ -215,7 +277,7 @@ JSON
    ${reviewEventGuidance}
 
 ${buildCustomInstructionsSection(codeReviewInstructions)}
-${buildCommentOnlyRule(commentOnlyReviews)}${buildCommentGuidelines(isPublic)}`;
+${buildCommentOnlyRule(commentOnlyReviews)}${buildCommandTipSection(commandTip)}${buildCommentGuidelines(isPublic)}`;
 }
 
 export function buildCommentActionPrompt(params: {

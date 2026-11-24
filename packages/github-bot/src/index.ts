@@ -38,6 +38,7 @@ import {
 import { handlePullRequestChanged } from "./review-gate";
 import { createKvCacheStore } from "@open-inspect/shared/cache-store";
 import { toAutofixEnvelope } from "./autofix-ingress";
+import { parseBotCommand } from "@open-inspect/shared/github-mention";
 
 const app = new Hono<{ Bindings: Env }>();
 const DELIVERY_DEDUPE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -53,6 +54,16 @@ app.get("/health", (c) => c.json({ status: "healthy", service: "open-inspect-git
 
 app.post("/webhooks/github", async (c) => {
   const log = createLogger("webhook", {}, parseLogLevel(c.env.LOG_LEVEL));
+  // Checked before any delivery state, so a bad value fails every delivery the same clear
+  // way instead of deep inside comment handling.
+  try {
+    parseBotCommand(c.env.GITHUB_BOT_COMMAND);
+  } catch (err) {
+    log.error("config.invalid_bot_command", {
+      error: err instanceof Error ? err : new Error(String(err)),
+    });
+    return c.json({ error: "GITHUB_BOT_COMMAND is invalid" }, 500);
+  }
   const cacheStore = createKvCacheStore(c.env.GITHUB_KV);
 
   const rawBody = await c.req.text();
@@ -112,6 +123,7 @@ app.post("/webhooks/github", async (c) => {
     payload,
     deliveryId: deliveryId ?? `missing:${traceId}`,
     botUsername: c.env.GITHUB_BOT_USERNAME,
+    botCommand: c.env.GITHUB_BOT_COMMAND,
     receivedAt: new Date(),
   });
   let autofixEnqueueFailed = false;

@@ -18,6 +18,9 @@ import { resolveModelSelection, type ModelSelection } from "./model-selection";
 import type { ReviewerContext } from "./prompts";
 import { getModelDisplayName } from "@open-inspect/shared/models";
 import type { ParseInlinePromptFlagsResult } from "@open-inspect/shared/inline-prompt-flags";
+import { ACTOR_ADMISSION_DENIED_CODE } from "@open-inspect/shared/types/actors";
+import { createKvCacheStore } from "@open-inspect/shared/cache-store";
+import { botHandle } from "@open-inspect/shared/github-mention";
 
 /** One started session; a multi-reviewer review starts one per reviewer. */
 interface LaunchedSession {
@@ -382,6 +385,10 @@ export async function startSession(
       }
 
       if (sessions.length === 0) {
+        if (refusal === ACTOR_ADMISSION_DENIED_CODE) {
+          await postSignInNotice(env, log, meta, { commentsUrl, ghToken, userAgent, sender });
+          return { outcome: "skipped", skip_reason: refusal };
+        }
         if (refusal) {
           // A PR comment must not disclose secondary repositories from the environment.
           await postRequiredComment(refusalComment(refusal, `${owner}/${repoName}`), refusal);
@@ -411,19 +418,57 @@ export async function startSession(
   }
 }
 
-type RefusalCode = "not_member" | "target_team_missing_grant" | "team_archived";
+type RefusalCode =
+  "not_member" | "target_team_missing_grant" | "team_archived" | typeof ACTOR_ADMISSION_DENIED_CODE;
 
 type LaunchOutcome =
   { kind: "launched"; session: LaunchedSession } | { kind: "refused"; code: RefusalCode };
 
 function isRefusal(status: number, code: string | undefined): code is RefusalCode {
   return (
-    (status === 403 && code === "not_member") ||
+    (status === 403 && (code === "not_member" || code === ACTOR_ADMISSION_DENIED_CODE)) ||
     (status === 409 && (code === "target_team_missing_grant" || code === "team_archived"))
   );
 }
 
-function refusalComment(code: RefusalCode, triggerRepo: string): string {
+const SIGN_IN_NOTICE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * Tells a sender with no account, once per pull request, to sign in on the web: the
+ * control plane enrolls a GitHub sender only after they have. The claim is written before
+ * the reply, so a redelivery or a second comment never repeats it; a failed reply releases
+ * the claim for the next one.
+ */
+async function postSignInNotice(
+  env: Env,
+  log: Logger,
+  meta: { trace_id: string; repo: string; pull_number: number },
+  reply: {
+    commentsUrl: string;
+    ghToken: string;
+    userAgent: string;
+    sender: ReviewRequestedPayload["sender"];
+  }
+): Promise<void> {
+  const store = createKvCacheStore(env.GITHUB_KV);
+  const key = `sign-in-notice:${meta.repo}#${meta.pull_number}:${reply.sender.id}`;
+  if ((await store.get(key)) !== null) return;
+  await store.put(key, reply.sender.login, { ttlMs: SIGN_IN_NOTICE_TTL_MS });
+  const where = env.WEB_APP_URL?.trim();
+  if (!where) log.warn("session.sign_in_notice_without_url", meta);
+  const body = `Sign in once ${where ? `at ${where}` : "on the web"} to use @${botHandle(env.GITHUB_BOT_USERNAME)} here.`;
+  if (await postIssueComment(reply.ghToken, reply.commentsUrl, body, reply.userAgent)) {
+    log.info("session.sign_in_notice_posted", { ...meta, sender: reply.sender.login });
+    return;
+  }
+  await store.delete(key);
+  log.warn("session.sign_in_notice_failed", meta);
+}
+
+function refusalComment(
+  code: Exclude<RefusalCode, typeof ACTOR_ADMISSION_DENIED_CODE>,
+  triggerRepo: string
+): string {
   return {
     not_member:
       "I couldn't start a session because you are not a member of the target team. Ask a team lead to add you, then try again.",

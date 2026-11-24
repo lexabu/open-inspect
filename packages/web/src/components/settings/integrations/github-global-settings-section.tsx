@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
+import { apiOnlyGitHubSettings } from "./github-api-only-settings";
 import { GitHubAutofixSettingsFields } from "./github-autofix-settings-fields";
 import { GitHubAutoReviewDeprecationNotice } from "./github-auto-review-deprecation-notice";
 import {
@@ -180,14 +181,7 @@ export function GlobalSettingsSection({
         ...(codeReviewInstructions ? { codeReviewInstructions } : {}),
         ...(commentActionInstructions ? { commentActionInstructions } : {}),
         ...(settings?.defaults?.autofix !== undefined || autofixTouched ? { autofix } : {}),
-        // The form does not edit reviewers yet; keep any list set through the API.
-        ...(settings?.defaults?.reviewers ? { reviewers: settings.defaults.reviewers } : {}),
-        ...(settings?.defaults?.commentOnlyReviews !== undefined
-          ? { commentOnlyReviews: settings.defaults.commentOnlyReviews }
-          : {}),
-        ...(settings?.defaults?.mergeGate !== undefined
-          ? { mergeGate: settings.defaults.mergeGate }
-          : {}),
+        ...apiOnlyGitHubSettings(settings?.defaults),
       },
     };
 

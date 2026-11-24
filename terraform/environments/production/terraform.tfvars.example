@@ -191,6 +191,10 @@ github_webhook_secret = ""
 # The webhook handler uses this to detect @mentions of the bot in PRs/issues.
 github_bot_username = ""
 
+# Optional short command that also calls the bot: `/<command>` anywhere in a PR
+# comment, or `<command>` at the start of a line. Empty for none.
+# github_bot_command = "npai"
+
 # Model the GitHub bot uses for a repository that does not pin one in its own
 # integration config. Accepts a canonical "provider/model" id or a bare
 # "claude-"/"gpt-" id. Commented out means the default below.

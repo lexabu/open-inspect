@@ -37,6 +37,7 @@ interface AutofixIngressInput {
   payload: unknown;
   deliveryId: string;
   botUsername: string | undefined;
+  botCommand: string | undefined;
   receivedAt: Date;
 }
 
@@ -54,7 +55,10 @@ export function toAutofixEnvelope(input: AutofixIngressInput): GitHubAutofixEnve
   switch (input.event) {
     case "issue_comment": {
       const parsed = pullRequestCommentPayloadSchema.safeParse(input.payload);
-      if (!parsed.success || containsBotMention(parsed.data.comment.body, input.botUsername)) {
+      if (
+        !parsed.success ||
+        containsBotMention(parsed.data.comment.body, input.botUsername, input.botCommand)
+      ) {
         return null;
       }
 

@@ -540,6 +540,10 @@ export class IntegrationSettingsStore {
       throw new IntegrationSettingsValidationError("commentOnlyReviews must be a boolean");
     }
 
+    if (settings.reviewTip !== undefined && typeof settings.reviewTip !== "boolean") {
+      throw new IntegrationSettingsValidationError("reviewTip must be a boolean");
+    }
+
     if (
       settings.codeReviewInstructions !== undefined &&
       typeof settings.codeReviewInstructions !== "string"
