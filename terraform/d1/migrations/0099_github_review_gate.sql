@@ -68,9 +68,12 @@ CREATE TABLE github_review_heads (
   attempt_id TEXT REFERENCES github_review_attempts (id),
   -- a concluded review of an earlier head whose diff is the same,
   carried_attempt_id TEXT REFERENCES github_review_attempts (id),
-  -- or a person's override of this commit.
+  -- or a person's override of this commit, with the base and diff it was given for.
   override_by TEXT,
   override_reason TEXT,
+  override_base_ref TEXT,
+  override_base_sha TEXT,
+  override_diff_hash TEXT,
   -- Why the head needs a review, when it rests on nothing.
   note TEXT,
   -- The head's one check run; created once, then only updated.
@@ -80,8 +83,18 @@ CREATE TABLE github_review_heads (
   version INTEGER NOT NULL DEFAULT 1,
   published_version INTEGER,
   published_state TEXT,
+  -- The state a reconciler set out to write, from before it calls GitHub until the write
+  -- is on record. While it is set, what GitHub shows is not known, and published_state is
+  -- not trusted.
+  pending_state TEXT,
+  -- GitHub may be showing a pass: one was written, or set out to be written, and no
+  -- other state has been recorded since. Such a head is retried until it is in line.
+  remote_may_pass INTEGER NOT NULL DEFAULT 0,
   -- Held by the one reconciler writing the head's check run; expires if it dies.
+  lease_token TEXT,
   lease_until INTEGER,
+  -- The recovery pass leaves the head alone until then, after a failed attempt.
+  retry_at INTEGER,
   changed_at INTEGER NOT NULL,
   PRIMARY KEY (repo_id, pr_number, head_sha)
 );

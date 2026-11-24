@@ -192,7 +192,9 @@ describe("events that arrive while another is being handled", () => {
   it("lets one reconciler write a head at a time", async () => {
     const h = harness();
     await h.change("head");
-    expect(await h.store.acquireLease(head, h.clock.now, h.clock.now + 60_000)).toBe(true);
+    expect(
+      await h.store.acquireLease(head, "someone-else", h.clock.now, h.clock.now + 60_000)
+    ).toBe(true);
 
     // Someone else holds the head: the start records its fact and writes nothing.
     await started(h);
@@ -222,10 +224,12 @@ describe("a check that cannot be written", () => {
     expect(h.shown(HEAD)).toBe("in_progress");
     expect(h.log.error).toHaveBeenCalledWith("github_review.reconcile_failed", expect.anything());
 
+    h.clock.now += 120_000;
     await h.gate.recover();
     expect(h.shown(HEAD)).toBe("in_progress");
 
     down(h, false);
+    h.clock.now += 120_000;
     await h.gate.recover();
     expect(h.shown(HEAD)).toBe("success");
     expect(h.world.checks).toHaveLength(1);
@@ -240,6 +244,7 @@ describe("a check that cannot be written", () => {
     expect(h.shown(HEAD)).toBe("in_progress");
 
     down(h, false);
+    h.clock.now += 120_000;
     await h.gate.recover();
     expect(h.state(HEAD)).toMatchObject({ output: { title: "Overridden by @bob" } });
   });
@@ -268,6 +273,7 @@ describe("a check that cannot be written", () => {
     expect(h.shown(HEAD)).toBe("in_progress");
 
     h.world.pull = pull;
+    h.clock.now += 120_000;
     await h.gate.recover();
     expect(h.shown(HEAD)).toBe("success");
   });

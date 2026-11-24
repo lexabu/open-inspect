@@ -52,11 +52,18 @@ export function fakeGitHub() {
     duringNextRead: null as (() => Promise<unknown>) | null,
     /** Runs once, inside the gate's next diff hash: something else happens meanwhile. */
     duringNextHash: null as (() => Promise<unknown>) | null,
+    /** Runs once, inside the gate's next look for other pull requests on the head. */
+    duringNextShared: null as (() => Promise<unknown>) | null,
     /** Runs once, right after the next check run is created. */
     afterNextCreate: null as (() => Promise<unknown>) | null,
     /** GitHub is unwell: no check run can be created or updated. */
     createFails: false,
     updateFails: false,
+    /**
+     * Runs once, inside the next update of a check run; the update then lands and its
+     * answer is lost, as when a request outlives its caller.
+     */
+    duringNextUpdateThenLost: null as (() => Promise<unknown>) | null,
     /** GitHub will not take a change to an existing run, as for a run that is gone. */
     updateRefused: false,
     /** Every check run, with the states written to it, newest state last. */
@@ -76,7 +83,16 @@ export function fakeGitHub() {
       const key = `${baseSha}...${headSha}`;
       return world.diffs.has(key) ? (world.diffs.get(key) ?? null) : "hash-of-the-usual-diff";
     },
-    sharedHeadReason: async () => world.shared,
+    sharedHeadReason: async () => {
+      const meanwhile = world.duringNextShared;
+      world.duringNextShared = null;
+      await meanwhile?.();
+      return world.shared;
+    },
+    findCheck: async (headSha, externalId) =>
+      world.checks
+        .filter((check) => check.headSha === headSha && check.externalId === externalId)
+        .at(-1)?.id ?? null,
     createCheck: async (run, state) => {
       if (world.createFails) return null;
       const id = world.checks.length + 1;
@@ -89,7 +105,11 @@ export function fakeGitHub() {
     updateCheck: async (id, state) => {
       if (world.updateFails) throw new Error("GitHub answered 502");
       if (world.updateRefused) return false;
+      const meanwhile = world.duringNextUpdateThenLost;
+      world.duringNextUpdateThenLost = null;
+      await meanwhile?.();
       world.checks.find((check) => check.id === id)?.states.push(state);
+      if (meanwhile) throw new Error("GitHub did not answer");
       return true;
     },
   };
@@ -186,6 +206,14 @@ export function harness(mode: GitHubMergeGate = "required") {
       },
       repository
     );
+  /** The database fails once, on the next record of what was published. */
+  const loseNextPublicationRecord = () => {
+    const record = store.recordPublished.bind(store);
+    store.recordPublished = async () => {
+      store.recordPublished = record;
+      throw new Error("D1 unavailable");
+    };
+  };
   const attemptStatus = async (id: string) => (await store.getAttempt(id))?.status;
   /** What a head's check rests on, as the database has it. */
   const evidence = async (headSha = world.pull?.headSha ?? HEAD) =>
@@ -208,6 +236,7 @@ export function harness(mode: GitHubMergeGate = "required") {
     override,
     attemptStatus,
     evidence,
+    loseNextPublicationRecord,
   };
 }
 

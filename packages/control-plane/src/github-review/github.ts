@@ -54,6 +54,9 @@ const headPullsSchema = z.array(
   z.object({ number: z.number(), state: z.string(), head: z.object({ sha: z.string() }) })
 );
 const createdCheckRunSchema = z.object({ id: z.number() });
+const checkRunsSchema = z.object({
+  check_runs: z.array(z.object({ id: z.number(), external_id: z.string().nullable() })),
+});
 const PULLS_PAGE_SIZE = 100;
 /** Answers that are about the check run itself, not about GitHub being unwell. */
 const RUN_REFUSED = new Set([404, 410, 422]);
@@ -72,6 +75,12 @@ export interface GateGitHub {
    * pull request that shares it.
    */
   sharedHeadReason(pull: LivePull): Promise<string | null>;
+  /**
+   * The app's own AI Review check run on a commit with this external id (the newest, if
+   * several), or null when there is none. Throws when GitHub cannot be read: not knowing
+   * must not lead to a second run.
+   */
+  findCheck(headSha: string, externalId: string): Promise<number | null>;
   /** Creates the AI Review check run on a commit; null when GitHub refuses. */
   createCheck(
     run: { headSha: string; externalId: string; startedAt: string },
@@ -184,6 +193,22 @@ export function createGateGitHub(
       return others.length === 0
         ? null
         : `Commit \`${pull.headSha.slice(0, 7)}\` is also the head of ${others.map((number) => `#${number}`).join(", ")}, and a check run cannot tell pull requests on one commit apart.`;
+    },
+
+    async findCheck(headSha, externalId) {
+      const query = new URLSearchParams({
+        check_name: AI_REVIEW_CHECK_NAME,
+        app_id: config.appId,
+        filter: "all",
+        per_page: String(PULLS_PAGE_SIZE),
+      });
+      const runs = await json(`/commits/${headSha}/check-runs?${query}`, checkRunsSchema);
+      if (runs === null) throw new Error(`Check runs on ${headSha} unreadable`);
+      const ids = runs.check_runs
+        .filter((run) => run.external_id === externalId)
+        .map((run) => run.id);
+      // Ids grow with creation time, so the highest id is the newest run.
+      return ids.length === 0 ? null : Math.max(...ids);
     },
 
     async createCheck(run, state) {

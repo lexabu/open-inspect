@@ -244,7 +244,18 @@ export class ReviewGate {
     }
 
     const head = headRef(repository, pull);
-    await this.deps.store.override(head, request.overriddenBy, request.reason, this.deps.now());
+    // Bound to the pull request as it was just validated: an override passes that base
+    // and that diff, not whatever the pull request has become by the time it is written.
+    const given = {
+      baseRef: pull.baseRef,
+      baseSha: pull.baseSha,
+      diffHash: await github.hashPullDiff(pull.baseSha, pull.headSha),
+    };
+    await this.deps.store.override(
+      head,
+      { by: request.overriddenBy, reason: request.reason, given },
+      this.deps.now()
+    );
     await this.reconcileDirty(head);
     this.deps.log.info("github_review.overridden", {
       pull_number: pull.number,
@@ -311,6 +322,7 @@ export class ReviewGate {
       try {
         await this.reconciler.reconcile(head);
       } catch (error) {
+        await this.deps.store.deferRetry(head, this.deps.now());
         this.deps.log.error("github_review.reconcile_failed", {
           pull_number: head.prNumber,
           head_sha: head.headSha,

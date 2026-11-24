@@ -149,25 +149,38 @@ and writes it:
   leave two answers standing.
 - A base change or a reopening is recorded before GitHub is asked anything. Whatever was reviewed or
   still running before it can no longer pass, whether or not the check could be updated.
-- One reconciler at a time writes a head, under a short lease in the database, and it re-reads the
-  facts after writing: a fact that arrived meanwhile is written next. Writing the same state twice
-  is skipped.
+- One reconciler at a time writes a head, under a five-minute lease in the database that only its
+  holder can use or release. It never begins a write in the last 90 seconds of the lease, which is
+  longer than a GitHub request can take, so a slow write cannot land after another reconciler has
+  taken the head over. It re-reads the facts after writing: a fact that arrived meanwhile is written
+  next. Writing the same state twice is skipped.
+- Before GitHub is called, the state about to be written is recorded as pending. If the write's
+  outcome is never recorded (the request timed out, the worker died), what GitHub shows is unknown,
+  and the next pass writes the head's state again instead of trusting what was last recorded. A head
+  with no run on record is looked up on GitHub by the App and the pull request before a run is
+  created, so a run created without being recorded is reused, not duplicated.
 - If GitHub cannot be read or written, the facts are kept and the head is marked as behind. A pass
-  that runs every minute writes it once GitHub is back. After three hours it stops trying; the
-  head's next event (a re-run, a push, an override) writes the check again.
+  that runs every minute retries it, less often the longer it has been behind, up to once an hour.
+  After three hours it stops, and the head's next event (a re-run, a push, an override) writes the
+  check again. The exception is a head for which GitHub may be showing a pass: it is retried until
+  the check says what the database says.
+- A commit that becomes the head again, after a force-push back to it, is validated again.
 
 ### Carry-forward
 
-A new head keeps the last review verdict when the pull request's diff against the same base branch
-is the one that was reviewed: same files, same hunks and context, same binary files and file modes.
-Only the positions of hunks and the blob ids of text files are ignored, since a base-branch update
-moves them. A diff in which one file has two hunks that read the same is never carried forward,
-because without positions they cannot be told apart.
+A new head keeps the pull request's latest review verdict when the pull request's diff against the
+same base branch is the one that was reviewed: same files, same hunks and context, same binary files
+and file modes. Only the positions of hunks and the blob ids of text files are ignored, since a
+base-branch update moves them. A diff in which one file has two hunks that read the same is never
+carried forward, because without positions they cannot be told apart.
 
 This is deliberate: "Update branch", or any push that leaves the pull request's own changes as they
 were reviewed, reuses the approval instead of costing a new review. The reviewers approved those
 changes; they did not review what arrived from the base branch, which was reviewed in its own pull
 requests.
+
+Only the latest verdict is carried. If a newer review of any head of the pull request concludes, a
+head resting on an older carried verdict asks for a review.
 
 ### Override
 
@@ -181,8 +194,10 @@ reason. Both are recorded on the check:
 
 The override applies only if the commit it names is still the head; otherwise the bot replies with
 the current head. A comment that mentions the bot and "override" in any other form is an ordinary
-request to the bot. An override covers that one commit: it is never carried forward, so the next
-push asks for a review again. A new review of the same commit replaces the override.
+request to the bot. An override covers that one commit, on the base branch and with the diff it had
+when the override was given: it is never carried forward, so the next push asks for a review again,
+and so does a change of base branch or a base update that changes the diff. A new review of the same
+commit replaces the override.
 
 ### Permissions
 

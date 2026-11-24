@@ -65,10 +65,14 @@ const headRowSchema = z
     carried_attempt_id: z.string().nullable(),
     override_by: z.string().nullable(),
     override_reason: z.string().nullable(),
+    override_base_ref: z.string().nullable(),
+    override_base_sha: z.string().nullable(),
+    override_diff_hash: z.string().nullable(),
     note: z.string().nullable(),
     check_run_id: z.number().nullable(),
     version: z.number(),
     published_state: z.string().nullable(),
+    pending_state: z.string().nullable(),
   })
   .transform((row) => ({
     repoId: row.repo_id,
@@ -79,7 +83,18 @@ const headRowSchema = z
     /** What the head's check rests on; `none` carries why it needs a review. */
     evidence:
       row.override_by !== null
-        ? ({ kind: "override", by: row.override_by, reason: row.override_reason ?? "" } as const)
+        ? ({
+            kind: "override",
+            by: row.override_by,
+            reason: row.override_reason ?? "",
+            /** The pull request the override was given for. */
+            given: {
+              headSha: row.head_sha,
+              baseRef: row.override_base_ref ?? "",
+              baseSha: row.override_base_sha ?? "",
+              diffHash: row.override_diff_hash,
+            },
+          } as const)
         : row.attempt_id !== null
           ? ({ kind: "review", attemptId: row.attempt_id } as const)
           : row.carried_attempt_id !== null
@@ -88,6 +103,8 @@ const headRowSchema = z
     checkRunId: row.check_run_id,
     version: row.version,
     publishedState: row.published_state,
+    /** A write was begun and never recorded: what GitHub shows is not known. */
+    writePending: row.pending_state !== null,
   }));
 /** A head commit of a pull request as the gate knows it. */
 export type ReviewHead = z.infer<typeof headRowSchema>;
@@ -109,12 +126,25 @@ const ATTEMPT_COLUMNS =
   "id, repo_owner, repo_name, repo_id, pr_number, head_sha, base_ref, base_sha, diff_hash, status, created_at";
 const SESSION_COLUMNS = "attempt_id, session_id, model, nonce, verdict, summary";
 const HEAD_COLUMNS =
-  "repo_id, pr_number, head_sha, repo_owner, repo_name, attempt_id, carried_attempt_id, override_by, override_reason, note, check_run_id, version, published_state";
+  "repo_id, pr_number, head_sha, repo_owner, repo_name, attempt_id, carried_attempt_id, override_by, override_reason, override_base_ref, override_base_sha, override_diff_hash, note, check_run_id, version, published_state, pending_state";
 const HEAD_KEY = "repo_id = ? AND pr_number = ? AND head_sha = ?";
 /** A head that rests on nothing yet: no review, no carried verdict, no override. */
 const NO_EVIDENCE = "attempt_id IS NULL AND carried_attempt_id IS NULL AND override_by IS NULL";
 /** Every fact written about a head bumps its version, which is what makes it dirty. */
 const TOUCH = "version = version + 1, changed_at = ?";
+const NO_OVERRIDE =
+  "override_by = NULL, override_reason = NULL, override_base_ref = NULL, override_base_sha = NULL, override_diff_hash = NULL";
+/**
+ * The id of a pull request's latest verdict (binds: repo id, pull number): its newest
+ * concluded attempt in which every reviewer gave a verdict. An attempt that did not
+ * finish is evidence of nothing, and an invalidated one is no longer evidence.
+ */
+const LATEST_VERDICT = `SELECT a.id FROM github_review_attempts a
+  WHERE a.repo_id = ? AND a.pr_number = ? AND a.status = 'concluded'
+    AND EXISTS (SELECT 1 FROM github_review_attempt_sessions s WHERE s.attempt_id = a.id)
+    AND NOT EXISTS (SELECT 1 FROM github_review_attempt_sessions s
+                    WHERE s.attempt_id = a.id AND s.verdict = 'failed')
+  ORDER BY a.created_at DESC, a.id DESC LIMIT 1`;
 
 /**
  * The facts of the AI Review gate. Every method is one conditional statement or one
@@ -182,8 +212,8 @@ export class ReviewGateStore {
            SELECT repo_id, pr_number, head_sha, repo_owner, repo_name, id, ?
            FROM github_review_attempts WHERE id = ? AND status = 'running'
            ON CONFLICT (repo_id, pr_number, head_sha) DO UPDATE SET
-             attempt_id = excluded.attempt_id, carried_attempt_id = NULL, override_by = NULL,
-             override_reason = NULL, note = NULL, ${TOUCH}`
+             attempt_id = excluded.attempt_id, carried_attempt_id = NULL, ${NO_OVERRIDE},
+             note = NULL, ${TOUCH}`
         )
         .bind(now, attempt.id, now),
     ]);
@@ -260,7 +290,8 @@ export class ReviewGateStore {
 
   /**
    * Records a session's verdict, once: a second report for the same session changes
-   * nothing. An attempt whose sessions have then all reported is concluded.
+   * nothing. An attempt whose sessions have then all reported is concluded. Heads that
+   * rest on a carried verdict are looked at again too: this may be a newer verdict.
    */
   async recordSessionVerdict(
     session: Pick<ReviewAttemptSession, "sessionId" | "attemptId">,
@@ -283,7 +314,13 @@ export class ReviewGateStore {
              WHERE attempt_id = ? AND verdict IS NULL)`
         )
         .bind(now, session.attemptId, session.attemptId),
-      this.touchHeads("attempt_id = ?", now, session.attemptId),
+      this.touchHeads(
+        `attempt_id = ? OR (carried_attempt_id IS NOT NULL AND (repo_id, pr_number) IN (
+           SELECT repo_id, pr_number FROM github_review_attempts WHERE id = ?))`,
+        now,
+        session.attemptId,
+        session.attemptId
+      ),
     ]);
   }
 
@@ -331,24 +368,27 @@ export class ReviewGateStore {
       this.db
         .prepare(
           `UPDATE github_review_heads
-           SET attempt_id = NULL, carried_attempt_id = NULL, override_by = NULL,
-               override_reason = NULL, note = ?, ${TOUCH}
+           SET attempt_id = NULL, carried_attempt_id = NULL, ${NO_OVERRIDE}, note = ?, ${TOUCH}
            WHERE repo_id = ? AND pr_number = ?`
         )
         .bind(note, now, pull.repoId, pull.prNumber),
     ]);
   }
 
-  /** Makes sure a head has a row; a new one rests on nothing, with `note` as the reason. */
+  /**
+   * Records that a commit is, or is again, the pull request's head. A new head rests on
+   * nothing, with `note` as the reason; a known one keeps what it rests on and is
+   * validated again, since the pull request may have changed while it was not the head.
+   */
   async ensureHead(head: HeadRef, note: string, now: number): Promise<void> {
     await this.db
       .prepare(
         `INSERT INTO github_review_heads
            (repo_id, pr_number, head_sha, repo_owner, repo_name, note, changed_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (repo_id, pr_number, head_sha) DO NOTHING`
+         ON CONFLICT (repo_id, pr_number, head_sha) DO UPDATE SET ${TOUCH}`
       )
-      .bind(head.repoId, head.prNumber, head.headSha, head.repoOwner, head.repoName, note, now)
+      .bind(head.repoId, head.prNumber, head.headSha, head.repoOwner, head.repoName, note, now, now)
       .run();
   }
 
@@ -364,23 +404,42 @@ export class ReviewGateStore {
 
   /**
    * Makes a head rest on the verdict of an earlier review, unless it rests on something
-   * by now: a review of the head itself that started meanwhile takes precedence.
+   * by now (a review of the head itself that started meanwhile takes precedence) or that
+   * verdict is no longer the pull request's latest.
    */
   async carry(head: HeadKey, attemptId: string, now: number): Promise<void> {
     await this.db
       .prepare(
         `UPDATE github_review_heads SET carried_attempt_id = ?, note = NULL, ${TOUCH}
-         WHERE ${HEAD_KEY} AND ${NO_EVIDENCE}`
+         WHERE ${HEAD_KEY} AND ${NO_EVIDENCE} AND ? = (${LATEST_VERDICT})`
       )
-      .bind(attemptId, now, head.repoId, head.prNumber, head.headSha)
+      .bind(
+        attemptId,
+        now,
+        head.repoId,
+        head.prNumber,
+        head.headSha,
+        attemptId,
+        head.repoId,
+        head.prNumber
+      )
       .run();
   }
 
   /**
-   * Makes a head rest on a person's override. A review of that commit still running is
+   * Makes a head rest on a person's override, given for the pull request as `given` has it. A review of that commit still running is
    * superseded; a review of another head is not the override's business.
    */
-  async override(head: HeadRef, by: string, reason: string, now: number): Promise<void> {
+  async override(
+    head: HeadRef,
+    override: {
+      by: string;
+      reason: string;
+      given: { baseRef: string; baseSha: string; diffHash: string | null };
+    },
+    now: number
+  ): Promise<void> {
+    const { by, reason, given } = override;
     const key = [head.repoId, head.prNumber, head.headSha];
     await this.db.batch([
       this.db
@@ -393,30 +452,35 @@ export class ReviewGateStore {
         .prepare(
           `INSERT INTO github_review_heads
              (repo_id, pr_number, head_sha, repo_owner, repo_name, override_by, override_reason,
-              changed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              override_base_ref, override_base_sha, override_diff_hash, changed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (repo_id, pr_number, head_sha) DO UPDATE SET
              override_by = excluded.override_by, override_reason = excluded.override_reason,
+             override_base_ref = excluded.override_base_ref,
+             override_base_sha = excluded.override_base_sha,
+             override_diff_hash = excluded.override_diff_hash,
              attempt_id = NULL, carried_attempt_id = NULL, note = NULL, ${TOUCH}`
         )
-        .bind(...key, head.repoOwner, head.repoName, by, reason, now, now),
+        .bind(
+          ...key,
+          head.repoOwner,
+          head.repoName,
+          by,
+          reason,
+          given.baseRef,
+          given.baseSha,
+          given.diffHash,
+          now,
+          now
+        ),
     ]);
   }
 
-  /**
-   * The review a later head with the same diff may carry forward: the pull request's
-   * newest concluded attempt in which every reviewer gave a verdict. An attempt that did
-   * not finish is evidence of nothing, and an invalidated one is no longer evidence.
-   */
+  /** The pull request's latest verdict, which a later head with the same diff may carry. */
   async findCarrySource(pull: PullKey): Promise<ReviewAttempt | null> {
     const row = await this.db
       .prepare(
-        `SELECT ${ATTEMPT_COLUMNS} FROM github_review_attempts a
-         WHERE a.repo_id = ? AND a.pr_number = ? AND a.status = 'concluded'
-           AND EXISTS (SELECT 1 FROM github_review_attempt_sessions s WHERE s.attempt_id = a.id)
-           AND NOT EXISTS (SELECT 1 FROM github_review_attempt_sessions s
-                           WHERE s.attempt_id = a.id AND s.verdict = 'failed')
-         ORDER BY a.created_at DESC, a.id DESC LIMIT 1`
+        `SELECT ${ATTEMPT_COLUMNS} FROM github_review_attempts WHERE id = (${LATEST_VERDICT})`
       )
       .bind(pull.repoId, pull.prNumber)
       .first();
@@ -432,63 +496,112 @@ export class ReviewGateStore {
   }
 
   /**
-   * Takes the right to write a head's check run until `until`. Of any number of
-   * reconcilers, one gets true; a lease left by a worker that died expires.
+   * Takes the right to write a head's check run until `until`, under `token`. Of any
+   * number of reconcilers, one gets true; a lease left by a worker that died expires.
    */
-  async acquireLease(head: HeadKey, now: number, until: number): Promise<boolean> {
+  async acquireLease(head: HeadKey, token: string, now: number, until: number): Promise<boolean> {
     const result = await this.db
       .prepare(
-        `UPDATE github_review_heads SET lease_until = ?
+        `UPDATE github_review_heads SET lease_token = ?, lease_until = ?
          WHERE ${HEAD_KEY} AND (lease_until IS NULL OR lease_until < ?)`
       )
-      .bind(until, head.repoId, head.prNumber, head.headSha, now)
+      .bind(token, until, head.repoId, head.prNumber, head.headSha, now)
       .run();
     return result.meta.changes === 1;
   }
 
-  async releaseLease(head: HeadKey): Promise<void> {
-    await this.db
-      .prepare(`UPDATE github_review_heads SET lease_until = NULL WHERE ${HEAD_KEY}`)
-      .bind(head.repoId, head.prNumber, head.headSha)
-      .run();
+  /** Gives a lease up; a lease someone else has taken since is theirs and stays. */
+  async releaseLease(head: HeadKey, token: string): Promise<void> {
+    await this.asLeaseHolder(head, token, "lease_token = NULL, lease_until = NULL");
   }
 
-  /** Records what was published for a version of a head, and the check run it is on. */
+  /**
+   * Records, before GitHub is called, the state the lease holder sets out to write. Until
+   * the write is recorded as published, nobody knows what GitHub shows. False, and
+   * nothing must be written, when the lease is no longer the holder's.
+   */
+  async beginWrite(head: HeadKey, token: string, state: string, pass: boolean): Promise<boolean> {
+    return this.asLeaseHolder(
+      head,
+      token,
+      "pending_state = ?, remote_may_pass = MAX(remote_may_pass, ?)",
+      state,
+      pass ? 1 : 0
+    );
+  }
+
+  /**
+   * Records what the lease holder published for a version of a head, and the check run
+   * it is on. False, and nothing recorded, when the lease is no longer the holder's: the
+   * head stays behind its facts and is reconciled again.
+   */
   async recordPublished(
     head: HeadKey,
-    published: { version: number; state: string | null; checkRunId: number | null }
-  ): Promise<void> {
+    token: string,
+    published: { version: number; state: string; pass: boolean; checkRunId: number }
+  ): Promise<boolean> {
+    return this.asLeaseHolder(
+      head,
+      token,
+      `published_version = ?, published_state = ?, check_run_id = ?, remote_may_pass = ?,
+       pending_state = NULL, retry_at = NULL`,
+      published.version,
+      published.state,
+      published.checkRunId,
+      published.pass ? 1 : 0
+    );
+  }
+
+  /** Records that a version of a head needed no write: its pull request is closed. */
+  async recordSettled(head: HeadKey, token: string, version: number): Promise<boolean> {
+    return this.asLeaseHolder(head, token, "published_version = ?, retry_at = NULL", version);
+  }
+
+  private async asLeaseHolder(
+    head: HeadKey,
+    token: string,
+    set: string,
+    ...bindings: unknown[]
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(`UPDATE github_review_heads SET ${set} WHERE ${HEAD_KEY} AND lease_token = ?`)
+      .bind(...bindings, head.repoId, head.prNumber, head.headSha, token)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  /**
+   * After a failed attempt, has the recovery pass leave a head alone for a while: a
+   * minute at first, and longer the longer the head has been behind, up to an hour.
+   */
+  async deferRetry(head: HeadKey, now: number): Promise<void> {
     await this.db
       .prepare(
         `UPDATE github_review_heads
-         SET published_version = ?, published_state = ?, check_run_id = ? WHERE ${HEAD_KEY}`
+         SET retry_at = ? + MIN(3600000, MAX(60000, (? - changed_at) / 4)) WHERE ${HEAD_KEY}`
       )
-      .bind(
-        published.version,
-        published.state,
-        published.checkRunId,
-        head.repoId,
-        head.prNumber,
-        head.headSha
-      )
+      .bind(now, now, head.repoId, head.prNumber, head.headSha)
       .run();
   }
 
   /**
    * Heads whose facts are ahead of what was published and that nobody is writing right
-   * now, oldest first: of one pull request, or of all. A head that has been dirty since
-   * before `changedAfter` is given up.
+   * now, oldest first. Of one pull request, for an event on it; or of all that are due,
+   * for the recovery pass. A head that has been behind since before `changedAfter` is
+   * given up, unless GitHub may be showing a pass for it: a pass the facts no longer
+   * support is never left standing.
    */
   async listDirtyHeads(now: number, changedAfter: number, pull?: PullKey): Promise<HeadRef[]> {
     const rows = await this.db
       .prepare(
         `SELECT ${HEAD_COLUMNS} FROM github_review_heads
          WHERE version > COALESCE(published_version, 0)
-           AND (lease_until IS NULL OR lease_until < ?) AND changed_at > ?
-           ${pull ? "AND repo_id = ? AND pr_number = ?" : ""}
+           AND (lease_until IS NULL OR lease_until < ?)
+           AND (changed_at > ? OR remote_may_pass = 1)
+           AND ${pull ? "repo_id = ? AND pr_number = ?" : "(retry_at IS NULL OR retry_at <= ?)"}
          ORDER BY changed_at LIMIT 50`
       )
-      .bind(now, changedAfter, ...(pull ? [pull.repoId, pull.prNumber] : []))
+      .bind(now, changedAfter, ...(pull ? [pull.repoId, pull.prNumber] : [now]))
       .all();
     return rows.results.map((row) => headRowSchema.parse(row));
   }

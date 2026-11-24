@@ -169,6 +169,38 @@ describe("the gate's GitHub client", () => {
   );
 });
 
+describe("findCheck", () => {
+  it("finds the app's own newest run for the pull request on a commit", async () => {
+    respond({
+      [`/commits/${HEAD}/check-runs`]: () =>
+        Response.json({
+          check_runs: [
+            { id: 7, external_id: "open-inspect:pr=42" },
+            { id: 9, external_id: "open-inspect:pr=42" },
+            { id: 11, external_id: "open-inspect:pr=57" },
+            { id: 12, external_id: null },
+          ],
+        }),
+    });
+
+    expect(await github().findCheck(HEAD, "open-inspect:pr=42")).toBe(9);
+    expect(await github().findCheck(HEAD, "open-inspect:pr=58")).toBeNull();
+    const url = new URL(requests()[0].url);
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      check_name: "AI Review",
+      app_id: expect.any(String),
+      filter: "all",
+      per_page: "100",
+    });
+  });
+
+  it("throws when the runs cannot be read, so that none is created blind", async () => {
+    respond({ [`/commits/${HEAD}/check-runs`]: () => new Response("Bad", { status: 502 }) });
+
+    await expect(github().findCheck(HEAD, "open-inspect:pr=42")).rejects.toThrow("unreadable");
+  });
+});
+
 describe("sharedHeadReason", () => {
   it("passes a pull request that is the only open one on its head commit", async () => {
     respond({

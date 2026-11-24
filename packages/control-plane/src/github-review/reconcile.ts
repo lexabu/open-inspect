@@ -11,12 +11,19 @@ import { botHandle } from "@open-inspect/shared/github-mention";
 import { getModelDisplayName } from "@open-inspect/shared/models";
 import { reviewCheckExternalId } from "@open-inspect/shared/types/github-review-gate";
 import type { GitHubMergeGate } from "@open-inspect/shared/types/integrations";
+import { generateId } from "../auth/crypto";
 import type { Logger } from "../logger";
 import type { CheckRunState, GateGitHub, LivePull } from "./github";
 import type { HeadKey, ReviewAttempt, ReviewGateStore, ReviewHead } from "./store";
 
 /** How long one reconciler may hold a head; a lease left by a worker that died expires. */
-const LEASE_MS = 60_000;
+const LEASE_MS = 5 * 60_000;
+/**
+ * No GitHub write is begun this close to the end of the lease. It is longer than a GitHub
+ * request can take, so a write cannot land after another reconciler has taken the head
+ * over and written something newer.
+ */
+const WRITE_MARGIN_MS = 90_000;
 /** Facts can change while a state is being written; the write is redone this many times. */
 const MAX_PASSES = 3;
 
@@ -34,6 +41,19 @@ export interface ReconcilerDeps {
   botUsername: string;
   now(): number;
   log: Logger;
+}
+
+interface Lease {
+  token: string;
+  until: number;
+}
+
+/** The pull request something was reviewed, or overridden, as. */
+interface Reviewed {
+  headSha: string;
+  baseRef: string;
+  baseSha: string;
+  diffHash: string | null;
 }
 
 type ActiveMode = Exclude<GitHubMergeGate, "off">;
@@ -87,74 +107,95 @@ export class Reconciler {
   async reconcile(key: HeadKey): Promise<void> {
     const { store } = this.deps;
     const now = this.deps.now();
+    const lease = { token: generateId(), until: now + LEASE_MS };
     // Whoever holds the lease sees this caller's fact too: it re-reads before it is done.
-    if (!(await store.acquireLease(key, now, now + LEASE_MS))) return;
+    if (!(await store.acquireLease(key, lease.token, now, lease.until))) return;
+    let failure: unknown;
     try {
       for (let pass = 0; pass < MAX_PASSES; pass++) {
+        if (this.writeWouldOutliveLease(lease)) return;
         const head = await store.getHead(key);
         if (head === null) return;
-        const published = await this.publish(head);
-        // A fact written meanwhile is not in what was just published. The version it
-        // bumped was not recorded as published, so the head is still dirty.
-        if (published && (await store.getHead(key))?.version === head.version) return;
+        try {
+          const published = await this.publish(head, lease);
+          // A fact written meanwhile is not in what was just published. The version it
+          // bumped was not recorded as published, so the head is still dirty.
+          if (published && (await store.getHead(key))?.version === head.version) return;
+          failure = undefined;
+        } catch (error) {
+          // A write that failed may have landed all the same, with a state the facts no
+          // longer imply. The next pass writes over it instead of leaving it up.
+          failure = error;
+        }
       }
     } finally {
-      await store.releaseLease(key);
+      await store.releaseLease(key, lease.token);
     }
+    if (failure !== undefined) throw failure;
   }
 
-  /** Computes a head's state and writes it; false when the facts moved on meanwhile. */
-  private async publish(head: ReviewHead): Promise<boolean> {
+  /**
+   * No GitHub write is begun so close to the end of the lease that it could still be in
+   * flight when another reconciler takes the head over.
+   */
+  private writeWouldOutliveLease(lease: Lease): boolean {
+    return this.deps.now() > lease.until - WRITE_MARGIN_MS;
+  }
+
+  /**
+   * Computes a head's state and writes it. False when the facts moved on meanwhile, or
+   * the lease is lost or too near its end to write under: the head stays dirty.
+   */
+  private async publish(head: ReviewHead, lease: Lease): Promise<boolean> {
     const { store } = this.deps;
     const repository = { owner: head.repoOwner, name: head.repoName, id: head.repoId };
     const github = this.deps.github(repository);
     const state = await this.desiredState(head, repository, github);
     // A closed pull request shows nothing new; its head is simply no longer dirty.
-    if (state === null) {
-      await store.recordPublished(head, {
-        version: head.version,
-        state: head.publishedState,
-        checkRunId: head.checkRunId,
-      });
-      return true;
-    }
+    if (state === null) return store.recordSettled(head, lease.token, head.version);
     // Computing took GitHub calls; a state the facts no longer imply is not written.
     if ((await store.getHead(head))?.version !== head.version) return false;
 
     const serialized = JSON.stringify(state);
+    const pass = state.status === "completed" && state.conclusion === "success";
     let checkRunId = head.checkRunId;
-    if (checkRunId === null || serialized !== head.publishedState) {
+    // What was last recorded as published is what GitHub shows only if no write has been
+    // begun since without being recorded.
+    if (checkRunId === null || head.writePending || serialized !== head.publishedState) {
+      if (this.writeWouldOutliveLease(lease)) return false;
+      if (!(await store.beginWrite(head, lease.token, serialized, pass))) return false;
       checkRunId = await this.write(github, head, state);
     }
-    await store.recordPublished(head, { version: head.version, state: serialized, checkRunId });
-    return true;
+    return store.recordPublished(head, lease.token, {
+      version: head.version,
+      state: serialized,
+      pass,
+      checkRunId,
+    });
   }
 
   /**
-   * Writes a state to the head's one check run, creating it the first time. A run that
-   * cannot be updated (GitHub refuses the change, or the run is gone) is replaced by a
-   * new one, which becomes the head's run.
+   * Writes a state to the head's one check run. A head with no run on record is looked
+   * up on GitHub first, since a run may have been created without being recorded; only
+   * then is one created. A run that cannot be updated (GitHub refuses the change, or the
+   * run is gone) is replaced by a new one, which becomes the head's run.
    */
   private async write(github: GateGitHub, head: ReviewHead, state: CheckRunState): Promise<number> {
-    if (head.checkRunId !== null && (await github.updateCheck(head.checkRunId, state))) {
-      return head.checkRunId;
-    }
+    const externalId = reviewCheckExternalId(head.prNumber);
+    const known = head.checkRunId ?? (await github.findCheck(head.headSha, externalId));
+    if (known !== null && (await github.updateCheck(known, state))) return known;
     const created = await github.createCheck(
-      {
-        headSha: head.headSha,
-        externalId: reviewCheckExternalId(head.prNumber),
-        startedAt: new Date(this.deps.now()).toISOString(),
-      },
+      { headSha: head.headSha, externalId, startedAt: new Date(this.deps.now()).toISOString() },
       state
     );
     if (created === null) {
       throw new Error(`AI Review check could not be written for ${head.headSha}`);
     }
-    if (head.checkRunId !== null) {
+    if (known !== null) {
       this.deps.log.warn("github_review.check_run_replaced", {
         pull_number: head.prNumber,
         head_sha: head.headSha,
-        replaced: head.checkRunId,
+        replaced: known,
       });
     }
     return created;
@@ -181,7 +222,7 @@ export class Reconciler {
         return ask(evidence.note ?? "No AI review covers this commit.");
       case "override": {
         const summary = `@${evidence.by} overrode the AI Review check on commit \`${short(head.headSha)}\`.\n\nReason: ${evidence.reason}`;
-        const blocked = await this.passBlocked(github, pull, head, null);
+        const blocked = await this.passBlocked(github, pull, head, evidence.given);
         if (blocked !== null) return ask(`${summary}\n\n${blocked}`);
         return {
           status: "completed",
@@ -237,8 +278,10 @@ export class Reconciler {
         };
       }
       case "carried": {
-        const attempt = await store.getAttempt(evidence.attemptId);
-        if (attempt === null || attempt.status !== "concluded") {
+        // A carried verdict stands only while it is the pull request's latest: a newer
+        // one, of whatever head, was not of this diff.
+        const attempt = await store.findCarrySource(head);
+        if (attempt === null || attempt.id !== evidence.attemptId) {
           return ask("No AI review covers this diff.");
         }
         const result = await this.attemptResult(attempt);
@@ -288,27 +331,25 @@ export class Reconciler {
   /**
    * Why a head must not pass although what it rests on approves, or null when it may.
    * The commit must be the pull request's head and the only open pull request on it, and
-   * a review must still be of the pull request as it is: same base branch, and the same
-   * diff if the base has moved on or the review was of another head.
+   * the review or override must still be of the pull request as it is: same base branch,
+   * and the same diff if the base has moved on or the review was of another head.
    */
   private async passBlocked(
     github: GateGitHub,
     pull: LivePull,
     head: ReviewHead,
-    attempt: ReviewAttempt | null
+    reviewed: Reviewed
   ): Promise<string | null> {
     if (pull.headSha !== head.headSha) {
       return `Commit \`${short(head.headSha)}\` is no longer the head of #${head.prNumber}.`;
     }
-    if (attempt !== null) {
-      if (pull.baseRef !== attempt.baseRef) {
-        return `The base branch changed from \`${attempt.baseRef}\` to \`${pull.baseRef}\` since the review.`;
-      }
-      if (pull.baseSha !== attempt.baseSha || head.headSha !== attempt.headSha) {
-        const hash = await github.hashPullDiff(pull.baseSha, pull.headSha);
-        if (hash === null || hash !== attempt.diffHash) {
-          return `The pull request's diff against \`${pull.baseRef}\` could not be shown to be the one that was reviewed.`;
-        }
+    if (pull.baseRef !== reviewed.baseRef) {
+      return `The base branch changed from \`${reviewed.baseRef}\` to \`${pull.baseRef}\`.`;
+    }
+    if (pull.baseSha !== reviewed.baseSha || head.headSha !== reviewed.headSha) {
+      const hash = await github.hashPullDiff(pull.baseSha, pull.headSha);
+      if (hash === null || hash !== reviewed.diffHash) {
+        return `The pull request's diff against \`${pull.baseRef}\` could not be shown to be the one that was reviewed.`;
       }
     }
     return github.sharedHeadReason(pull);

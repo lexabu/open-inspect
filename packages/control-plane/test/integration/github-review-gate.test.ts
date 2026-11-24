@@ -625,7 +625,12 @@ describe("override", () => {
       },
       reviewAction: false,
     });
-    expect(await h.evidence()).toEqual({ kind: "override", by: "bob", reason: "verified by hand" });
+    expect(await h.evidence()).toEqual({
+      kind: "override",
+      by: "bob",
+      reason: "verified by hand",
+      given: { headSha: HEAD, baseRef: "main", baseSha: BASE, diffHash: "hash-of-the-usual-diff" },
+    });
     expect(await h.attemptStatus(running)).toBe("superseded");
 
     // The review that was in flight reports afterwards: the override stands.
