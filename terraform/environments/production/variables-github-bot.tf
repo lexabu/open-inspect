@@ -32,8 +32,8 @@ variable "github_bot_command" {
   default     = ""
 
   validation {
-    condition     = can(regex("^([A-Za-z0-9][A-Za-z0-9-]*)?$", var.github_bot_command))
-    error_message = "github_bot_command must be empty, or letters, digits and hyphens starting with a letter or digit."
+    condition     = can(regex("^([a-z0-9][a-z0-9-]*)?$", var.github_bot_command))
+    error_message = "github_bot_command must be empty, or lower-case letters, digits and hyphens starting with a letter or digit."
   }
 }
 

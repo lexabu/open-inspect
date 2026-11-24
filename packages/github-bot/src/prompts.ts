@@ -39,9 +39,9 @@ function buildUntrustedUserContentBlock(params: {
   content: string;
 }): string {
   const { source, author, content } = params;
-  const escapedContent = content
-    .replaceAll("<user_content", "<\\user_content")
-    .replaceAll("</user_content>", "<\\/user_content>");
+  // Any tag-like `<user_content` or `</user_content` (spaces and case aside) loses its
+  // shape, so the content can neither close this block nor open another.
+  const escapedContent = content.replace(/<(?=\s*\/?\s*user_content)/gi, "<\\");
 
   return `<user_content source="${source}" author="${author}">
 ${escapedContent}
@@ -93,20 +93,28 @@ const FOCUS_AREAS: Record<ReviewFocusArea, string> = {
   tests: "tests: changed behavior without coverage, and tests that would still pass with the bug",
 };
 
-function buildFocusSection(focus: ReviewFocus | null): string {
-  if (!focus) return "";
+/** A focus a commenter asked a review for, which only they chose. */
+export interface FocusRequest {
+  focus: ReviewFocus;
+  requestedBy: string;
+}
+
+function buildFocusSection(request: FocusRequest | null): string {
+  if (!request) return "";
+  const { focus, requestedBy } = request;
+  const asked = `@${requestedBy} asked for this review`;
   const still =
-    "Still review the whole change, but look hardest there and lead with those findings.";
+    "This is their request, not a repository rule: still review the whole change, but look hardest there and lead with those findings.";
   if (focus.kind === "area") {
     return `
 ## Focus
-This review was asked to focus on ${FOCUS_AREAS[focus.area]}. ${still}
+${asked} to focus on ${FOCUS_AREAS[focus.area]}. ${still}
 `;
   }
   return `
 ## Focus
-The person who asked for this review gave it this focus. ${still}
-${buildUntrustedUserContentBlock({ source: "github_review_focus", author: "github", content: focus.text })}
+${asked} with the focus below. ${still}
+${buildUntrustedUserContentBlock({ source: "github_review_focus", author: requestedBy, content: focus.text })}
 `;
 }
 
@@ -152,7 +160,7 @@ export function buildCodeReviewPrompt(params: {
   /** A review asked for again on the head, right before merge. */
   preMerge?: boolean;
   /** What the person who asked for the review wants it to look hardest at. */
-  focus?: ReviewFocus | null;
+  focus?: FocusRequest | null;
   /** The command tip line the review ends with, or null for none. */
   commandTip?: string | null;
 }): string {

@@ -12,6 +12,7 @@ import {
   buildCodeReviewPrompt,
   buildCommentActionPrompt,
   buildReviewCommandTip,
+  type FocusRequest,
   type ReviewerContext,
 } from "./prompts";
 import type { ResolvedGitHubConfig } from "./utils/integration-config";
@@ -54,7 +55,7 @@ function reviewPromptFor(
   repo: Pick<ReviewRequestedPayload["repository"], "owner" | "name" | "private">,
   pr: ReviewRequestedPayload["pull_request"],
   preMerge: boolean,
-  focus: ReviewFocus | null = null
+  focus: FocusRequest | null = null
 ): (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string {
   return (config, reviewer) =>
     buildCodeReviewPrompt({
@@ -189,9 +190,11 @@ async function rerunReview(
 }
 
 /**
- * Reviews the pull request's head for whoever asked, the way a review request does: where
- * the merge gate is on, the review is started by the control plane and feeds the AI Review
- * check. A `headSha` given is the commit asked about; the review skips once the head moves on.
+ * Reviews the pull request's head for whoever asked, the way a review request does. A plain
+ * full review, where the merge gate is on, is started by the control plane and feeds the AI
+ * Review check; a focused one is steered by its asker, so it is an ordinary review session
+ * that never touches the check. A `headSha` given is the commit asked about; the review
+ * skips once the head moves on.
  */
 async function reviewHead(
   env: Env,
@@ -226,6 +229,7 @@ async function reviewHead(
 
   // A suite re-run and a run re-run of one click, two clicks, or a click and a comment
   // start one review: the control plane admits one attempt per head.
+  const { focus } = target;
   return startSession(env, log, traceId, {
     repository: repo,
     sender,
@@ -233,8 +237,14 @@ async function reviewHead(
     title: `GitHub: Review PR #${pullNumber}`,
     action: "review",
     reactionPath: target.reactionPath,
-    gated: { headSha: pr.head.sha, base: pr.base },
-    buildPrompt: reviewPromptFor(env, repo, pr, target.preMerge, target.focus),
+    gated: focus === null ? { headSha: pr.head.sha, base: pr.base } : undefined,
+    buildPrompt: reviewPromptFor(
+      env,
+      repo,
+      pr,
+      target.preMerge,
+      focus === null ? null : { focus, requestedBy: sender.login }
+    ),
   });
 }
 

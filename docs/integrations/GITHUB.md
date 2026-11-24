@@ -89,15 +89,15 @@ head commit. It passes when the platform's reviewers approve exactly that commit
 `"off"` (the default), `"shadow"` or `"required"`, set through the integration settings API,
 globally or per repository.
 
-| Event                                       | What the check does                                                                                          |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| PR opened, or marked ready for review       | A review starts and the check is in progress.                                                                |
-| Every reviewer session has finished         | Success if all approve; otherwise not approved, or unfinished if a session failed or gave no verdict.        |
-| New commits                                 | No review runs. The check asks for one: "Re-run the AI review before merging", with a **Review now** button. |
-| Base-branch update, PR's own diff unchanged | The last verdict carries forward to the new head.                                                            |
-| Base branch changed, or PR reopened         | The verdict is dropped and the check asks for a review.                                                      |
-| **Re-run**, **Re-run all**, **Review now**  | Reviews the head commit for whoever clicked, if they may trigger the bot. Draft PRs are skipped.             |
-| A [review command](#review-commands)        | Same as **Review now**: reviews the head commit for whoever commented, through the same gate.                |
+| Event                                           | What the check does                                                                                                                  |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| PR opened, or marked ready for review           | A review starts and the check is in progress.                                                                                        |
+| Every reviewer session has finished             | Success if all approve; otherwise not approved, or unfinished if a session failed or gave no verdict.                                |
+| New commits                                     | No review runs. The check asks for one: "Re-run the AI review before merging", with a **Review now** button.                         |
+| Base-branch update, PR's own diff unchanged     | The last verdict carries forward to the new head.                                                                                    |
+| Base branch changed, or PR reopened             | The verdict is dropped and the check asks for a review.                                                                              |
+| **Re-run**, **Re-run all**, **Review now**      | Reviews the head commit for whoever clicked, if they may trigger the bot. Draft PRs are skipped.                                     |
+| A plain full [review command](#review-commands) | Same as **Review now**: reviews the head commit for whoever commented, through the same gate. Focused reviews never touch the check. |
 
 In `shadow` mode a missing or unfavourable verdict concludes `neutral`, which never blocks a merge.
 In `required` mode it concludes `failure`, or `action_required` when no review covers the head, so
@@ -246,38 +246,49 @@ is one signal next to the required human approval, not a replacement for it.
 
 A PR comment calls the bot with any of three triggers:
 
-| Trigger       | Counts                                                                                     |
-| ------------- | ------------------------------------------------------------------------------------------ |
-| `@my-app`     | Anywhere in the comment's prose, with or without `[bot]`.                                  |
-| `/npai`       | Anywhere in the comment's prose, but not inside a path, URL or longer word (`src/npai/x`). |
-| `npai` (bare) | Only where it starts a line, so prose that names the bot ("ask npai later") does not.      |
+| Trigger       | Counts                                                                                                                                              |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@my-app`     | Anywhere in the comment's prose, with or without `[bot]`, in any case.                                                                              |
+| `/npai`       | Anywhere in prose after a space or a line start, in any case; never in a path, URL, link or email (`src/npai/x`, `?next=/npai`, `[x](/npai)`).      |
+| `npai` (bare) | Lower case exactly, only where it starts a line of an ordinary paragraph, so prose that names the bot ("ask npai later", "NPAI is wrong") does not. |
 
 `npai` stands for the deployment's short command, set with `GITHUB_BOT_COMMAND` (Terraform:
-`github_bot_command`); with none set, only the mention works. Text in code spans, code blocks, HTML
-comments and `<code>` elements never counts, and neither does a bare `npai` in a quoted or listed
-line (`> npai`, `- npai`), an email (`npai@x`) or a possessive (`npai's`).
+`github_bot_command`): lower-case letters, digits and hyphens. With none set, only the mention
+works; an invalid value makes the bot refuse every webhook with an error until it is fixed. Text in
+code spans, code blocks, HTML comments and `<code>` elements never counts. A bare `npai` also does
+not count in a quote (or a line continuing one), a list item (or its continuation), a heading (an
+underlined one too), a table, a `<details>` block, an email (`npai+tag@x`), a possessive (`npai's`)
+or a longer name (`npai_config`). In a comment too long to parse (over 10,000 characters) or too
+deeply nested, only the first non-blank line can hold a bare command or an override.
 
 The rest of the comment, with its triggers removed, says what to do:
 
-| Comment                                  | What starts                                                                    |
-| ---------------------------------------- | ------------------------------------------------------------------------------ |
-| `npai` or `npai review`                  | The default full review.                                                       |
-| `npai security` or `npai review bugs`    | The same review, told to look hardest at that area and lead with it.           |
-| `npai review <any text>`                 | A review focused on that text (passed to the reviewer as untrusted).           |
-| `npai override <commit> <reason>`        | An [override](#override) of the AI Review check, parsed as strictly as before. |
-| Anything else (`npai why is this slow?`) | A free-form [comment session](#mention-actions), as with a mention.            |
+| Comment                                  | What starts                                                                                                                                         |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npai` or `npai review`                  | The default full review, which feeds the AI Review check.                                                                                           |
+| `npai security` or `npai review bugs`    | A focused review: the same review, told that the commenter asked it to look hardest at that area.                                                   |
+| `npai review <any text>`                 | A review focused on that text, labelled as the commenter's request and passed to the reviewer as untrusted input.                                   |
+| `npai override <commit> <reason>`        | An [override](#override) of the AI Review check, parsed as strictly as before, on a line of its own outside comments, code, quotes and `<details>`. |
+| Anything else (`npai why is this slow?`) | A free-form [comment session](#mention-actions), as with a mention.                                                                                 |
 
 The focus areas are `security`, `performance`, `bugs` and `tests`. A word after the trigger that is
 not one of them, without `review` before it, makes the comment a free-form request.
 
 A review command reviews the pull request's current head, like a review request: the same allowed
 trigger users and write-access check, the configured reviewers, no review of a draft or closed PR,
-and the review pinned to the head commit at the time of the comment. Where the merge gate is on, the
-control plane starts it, exactly as **Review now** on the [AI Review check](#ai-review-check) does,
-so the check shows it in progress and takes its verdict; a review already running on the head is not
-started twice. Where the merge gate is off, it starts an ordinary review session. Review commands
-work in PR conversation comments and inline review threads; `!model` and `!reasoning` flags apply
-only to free-form requests.
+and the review pinned to the head commit at the time of the comment.
+
+Only a plain full review can feed the AI Review check, because a gate review must not be steered by
+whoever asks for it. Where the merge gate is on, a plain full review is started by the control
+plane, exactly as **Review now** on the [AI Review check](#ai-review-check) does, so the check shows
+it in progress and takes its verdict; a review already running on the head is not started twice. A
+focused review always runs as an ordinary review session, whatever the merge gate, and never touches
+the check. Where the merge gate is off, every review command starts an ordinary session.
+
+Review commands work in PR conversation comments and inline review threads. An inline comment that
+calls the bot is left out of the review that Autofix reads, so it is never handled twice; the
+review's other comments still reach Autofix. `!model` and `!reasoning` flags apply only to free-form
+requests, which receive the comment as written after the triggers.
 
 ### Command tip
 

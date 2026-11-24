@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  botTrigger,
-  containsBotMention,
-  lineTriggerSource,
-  stripBotMention,
-} from "./github-mention";
+import { botTrigger, containsBotMention, lineCommands, stripBotMention } from "./github-mention";
 
 const BOT = "nativepath-ai[bot]";
 const CMD = "npai";
@@ -13,7 +8,6 @@ describe("containsBotMention with a short command", () => {
   it.each([
     "npai",
     "npai review",
-    "NPAI security",
     "npai: what does this do?",
     "npai, why is this slow?",
     "   npai review",
@@ -22,7 +16,6 @@ describe("containsBotMention with a short command", () => {
     "/npai",
     "/npai security",
     "please /npai review this",
-    "(/npai)",
     // Like a mention, the slash command counts in quoted prose.
     "> /npai review",
     "ping /npai.",
@@ -38,6 +31,8 @@ describe("containsBotMention with a short command", () => {
     "the npai review was helpful",
     "npai's last review was wrong",
     "npai’s last review was wrong",
+    "NPAI security",
+    "(/npai)",
     "npai-cli is a different tool",
     "npais are not a thing",
     "write to npai@example.com",
@@ -100,16 +95,14 @@ describe("botTrigger", () => {
   });
 });
 
-describe("lineTriggerSource", () => {
-  const line = (command: string | undefined) =>
-    new RegExp(`^${lineTriggerSource(BOT, command)} override$`, "i");
-
-  it("matches every trigger form at the start of a line", () => {
-    for (const text of ["@nativepath-ai", "@nativepath-ai[bot]", "/npai", "npai"]) {
-      expect(line(CMD).test(`${text} override`)).toBe(true);
+describe("lineCommands", () => {
+  it("reads every trigger form at the start of a command line", () => {
+    for (const text of ["@nativepath-ai", "@NativePath-AI[bot]", "/NPAI", "npai"]) {
+      expect(lineCommands(`${text} override x`, BOT, CMD)).toEqual([" override x"]);
     }
-    expect(line(undefined).test("npai override")).toBe(false);
-    expect(line(undefined).test("@nativepath-ai override")).toBe(true);
+    expect(lineCommands("NPAI override x", BOT, CMD)).toEqual([]);
+    expect(lineCommands("npai override x", BOT, undefined)).toEqual([]);
+    expect(lineCommands("@nativepath-ai override x", BOT, undefined)).toEqual([" override x"]);
   });
 });
 

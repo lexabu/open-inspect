@@ -22,13 +22,14 @@ function focusArea(text: string): ReviewFocusArea | undefined {
 }
 
 export function parseCommentCommand(text: string): CommentCommand {
-  // Address punctuation left by the trigger ("npai: review", "@bot, security") is not text.
-  const request = text.replace(/^[\s:,]+/, "").trim();
-  if (request === "") return { kind: "review", focus: null };
-  const review = /^review(?:\s+([\s\S]+))?$/i.exec(request);
-  const rest = review ? (review[1] ?? "").trim() : request;
+  // Address punctuation left by the trigger ("npai: review", "@bot, security") does not
+  // change the command; a request keeps it, so `!model` after it stays prose.
+  const words = text.replace(/^[\s:,]+/, "").trim();
+  if (words === "") return { kind: "review", focus: null };
+  const review = /^review(?:\s+([\s\S]+))?$/i.exec(words);
+  const rest = review ? (review[1] ?? "").trim() : words;
   const area = focusArea(rest);
   if (area) return { kind: "review", focus: { kind: "area", area } };
-  if (!review) return { kind: "request", text: request };
+  if (!review) return { kind: "request", text: text.trim() };
   return { kind: "review", focus: rest ? { kind: "text", text: rest } : null };
 }

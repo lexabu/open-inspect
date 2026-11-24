@@ -66,54 +66,53 @@ function reviewComment(body: string): ReviewCommentPayload {
 const reactionUrls = () => vi.mocked(postReaction).mock.calls.map(([, url]) => url);
 
 describe("review commands with the merge gate on", () => {
+  it.each(["npai", "/npai review", "@test-bot review"])(
+    "starts %j through the gate on the live head",
+    async (body) => {
+      const { env, gateCalls, sessionsStarted } = commandEnv();
+
+      const result = await handleIssueComment(env, createLogger(), comment(body), "trace");
+
+      expect(result).toMatchObject({ outcome: "processed", handler_action: "review" });
+      expect(sessionsStarted()).toBe(0);
+      const [request] = gateCalls("reviews");
+      expect(request).toMatchObject({
+        pullNumber: 42,
+        headSha: HEAD,
+        base: { ref: "main", sha: BASE },
+      });
+      const prompt: string = request.reviewers[0].prompt;
+      expect(prompt).toContain(`compare/${BASE}...${HEAD}`);
+      expect(prompt).not.toContain("## Focus");
+      // A comment-triggered review is not a pre-merge re-run.
+      expect(prompt).not.toContain("## Pre-merge Review");
+      expect(reactionUrls()).toEqual([
+        "https://api.github.com/repos/acme/widgets/issues/comments/100/reactions",
+      ]);
+    }
+  );
+
   it.each([
-    ["npai", null],
-    ["/npai review", null],
-    ["@test-bot review", null],
-    ["npai security", "focus on security"],
-    ["npai review performance", "focus on performance"],
-    ["/npai bugs", "focus on correctness bugs"],
-    ["npai tests", "focus on tests"],
-  ])("starts %j through the gate on the live head", async (body, focusLine) => {
-    const { env, gateCalls, sessionsStarted } = commandEnv();
+    ["npai security", "to focus on security"],
+    ["npai review performance", "to focus on performance"],
+    ["/npai bugs", "to focus on correctness bugs"],
+    ["npai tests", "to focus on tests"],
+  ])("runs focused %j as an ordinary review on the live head", async (body, focusLine) => {
+    const { env, gateCalls, ownPrompts } = commandEnv();
 
     const result = await handleIssueComment(env, createLogger(), comment(body), "trace");
 
     expect(result).toMatchObject({ outcome: "processed", handler_action: "review" });
-    expect(sessionsStarted()).toBe(0);
-    const [request] = gateCalls("reviews");
-    expect(request).toMatchObject({
-      pullNumber: 42,
-      headSha: HEAD,
-      base: { ref: "main", sha: BASE },
-    });
-    const prompt: string = request.reviewers[0].prompt;
+    expect(gateCalls("reviews")).toHaveLength(0);
+    const [prompt] = ownPrompts();
     expect(prompt).toContain(`compare/${BASE}...${HEAD}`);
-    if (focusLine) expect(prompt).toContain(focusLine);
-    else expect(prompt).not.toContain("## Focus");
-    // A comment-triggered review is not a pre-merge re-run.
-    expect(prompt).not.toContain("## Pre-merge Review");
-    expect(reactionUrls()).toEqual([
-      "https://api.github.com/repos/acme/widgets/issues/comments/100/reactions",
-    ]);
-  });
-
-  it("passes free text after review as untrusted focus", async () => {
-    const { env, gateCalls } = commandEnv();
-
-    await handleIssueComment(env, createLogger(), comment("npai review the cache TTLs"), "trace");
-
-    const prompt: string = gateCalls("reviews")[0].reviewers[0].prompt;
-    expect(prompt).toContain("## Focus");
-    expect(prompt).toContain(
-      '<user_content source="github_review_focus" author="github">\nthe cache TTLs\n</user_content>'
-    );
+    expect(prompt).toContain(focusLine);
   });
 
   it("starts a review from an inline review comment, acknowledged on that comment", async () => {
     const { env, gateCalls } = commandEnv();
 
-    const result = await handleReviewComment(env, createLogger(), reviewComment("npai bugs"), "t");
+    const result = await handleReviewComment(env, createLogger(), reviewComment("npai"), "t");
 
     expect(result).toMatchObject({ outcome: "processed", handler_action: "review" });
     expect(gateCalls("reviews")).toHaveLength(1);

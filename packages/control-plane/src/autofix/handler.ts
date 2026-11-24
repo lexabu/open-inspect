@@ -4,6 +4,7 @@ import {
   type GitHubAutofixEnvelope,
   type ResolvedGitHubAutofixSettings,
 } from "@open-inspect/shared";
+import { parseBotCommand } from "@open-inspect/shared/github-mention";
 import { getGitHubAppConfig } from "../auth/github-app";
 import { IntegrationSettingsStore } from "../db/integration-settings";
 import { PrAutofixFeedbackStore } from "../db/pr-autofix-feedback-store";
@@ -66,7 +67,8 @@ export async function handleAutofixJob(
     },
     github,
     sessions,
-    { username: env.GITHUB_BOT_USERNAME, command: env.GITHUB_BOT_COMMAND },
+    // Checked where the handler is built, so a bad value fails the job clearly up front.
+    { username: env.GITHUB_BOT_USERNAME, command: parseBotCommand(env.GITHUB_BOT_COMMAND) },
     () => Date.now(),
     resolveCredentialScope
   );

@@ -38,10 +38,10 @@ describe("parseCommentCommand", () => {
     expect(parseCommentCommand(text)).toEqual({ kind: "request", text });
   });
 
-  it("drops address punctuation from a request", () => {
+  it("keeps address punctuation in a request, so the request reads as written", () => {
     expect(parseCommentCommand(": why is this slow?")).toEqual({
       kind: "request",
-      text: "why is this slow?",
+      text: ": why is this slow?",
     });
   });
 

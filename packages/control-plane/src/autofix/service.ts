@@ -212,7 +212,7 @@ export class AutofixService {
     private readonly github: GitHubAutofixProvider,
     private readonly sessions: SessionClient,
     /** The bot's login, and the short command that also calls it, if any. */
-    private readonly bot: { username: string; command: string | undefined },
+    private readonly bot: { username: string; command: string | null },
     private readonly now: () => number,
     private readonly resolveCredentialScope: (sessionId: string) => Promise<CredentialScope>
   ) {}
@@ -338,7 +338,9 @@ export class AutofixService {
             ...feedbackLocation,
             providerObject: { kind: "review", id: envelope.providerObject.id },
           };
-    const feedback = await this.github.getPullRequestFeedback(feedbackConfig, credentialScope);
+    const feedback = this.withoutBotCalls(
+      await this.github.getPullRequestFeedback(feedbackConfig, credentialScope)
+    );
     await this.feedbackStore.attachContext(receipt.feedbackKey, {
       artifactId: owner.artifactId,
       sessionId: owner.sessionId,
@@ -445,6 +447,21 @@ export class AutofixService {
       if (recovered) return recovered;
       throw error;
     }
+  }
+
+  /**
+   * A review without its inline comments that call the bot: the bot handles each of those
+   * as a command, so Autofix must not act on them too. The review's other feedback stays.
+   */
+  private withoutBotCalls(feedback: GitHubPullRequestFeedback): GitHubPullRequestFeedback {
+    if (feedback.kind !== "review") return feedback;
+    const { username, command } = this.bot;
+    return {
+      ...feedback,
+      comments: feedback.comments.filter(
+        (comment) => !containsBotMention(comment.body, username, command)
+      ),
+    };
   }
 
   private async ineligibilityReason(

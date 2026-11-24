@@ -9,15 +9,16 @@ import { escapeRegExp } from "./regex";
  *
  * - A mention. People type the App's handle without the suffix (GitHub does not
  *   autocomplete Apps), so `@my-app` and `@my-app[bot]` both count, anywhere in prose.
- * - The command as a slash command (`/ma`), anywhere in prose.
- * - The bare command (`ma`), only where it starts a line, so prose that names it does not.
+ * - The command as a slash command (`/ma`), anywhere in prose after a space or a line start.
+ * - The bare command (`ma`, lower case exactly), only where it starts a line of a top-level
+ *   paragraph, so prose that names it, quotes, lists, headings, tables and `<details>` do not.
  *
  * Not a trigger: text inside code, an HTML tag or comment, or a `<code>` element, an email
- * address in any script (`me@my-app.com`, `ma@x`), a team handle (`@my-app/team`), a path
- * (`src/ma/x`), a quoted or listed line (`> ma`), or a longer word that only starts with
- * the trigger (`@my-app-other`, `@my-app[bot]-clone`, `mas`), including one split by an
- * invisible format character. Emphasis and footnotes may surround a mention (`_@my-app_`,
- * `@my-app[^1]`).
+ * address in any script (`me@my-app.com`, `ma+tag@x`), a team handle (`@my-app/team`), a
+ * path, URL or link (`src/ma/x`, `?next=/ma`, `[x](/ma)`), or a longer word that only starts
+ * with the trigger (`@my-app-other`, `@my-app[bot]-clone`, `mas`, `ma_x`), including one split
+ * by an invisible format character. Emphasis and footnotes may surround a mention
+ * (`_@my-app_`, `@my-app[^1]`).
  */
 
 /** The App's handle (`my-app`) from a configured login, with or without `[bot]`. */
@@ -38,31 +39,29 @@ export function isBotLogin(login: string | null | undefined, botUsername: string
 /** Letters, digits and marks in any script, plus invisible format characters. */
 const WORD = String.raw`\p{L}\p{N}\p{M}\p{Cf}`;
 
-/** A short command: an ASCII letter or digit, then letters, digits or hyphens. */
-const COMMAND = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+/** A short command: a lower-case ASCII letter or digit, then those or hyphens. */
+const COMMAND = /^[a-z0-9][a-z0-9-]*$/;
 
-/** The configured short command, or null where none is set. A malformed one is an error. */
-function botCommand(command: string | undefined): string | null {
+/**
+ * The configured short command, or null where none is set. A malformed one is an error:
+ * deployments check it once where they load their configuration.
+ */
+export function parseBotCommand(command: string | null | undefined): string | null {
   const value = command?.trim() ?? "";
   if (value === "") return null;
-  if (!COMMAND.test(value)) throw new Error(`Invalid bot command "${value}"`);
+  if (!COMMAND.test(value)) {
+    throw new Error(`Invalid bot command "${value}": use lower-case letters, digits and hyphens`);
+  }
   return value;
 }
 
 /** The end of a command: not a longer word, a path, an email, a possessive or a domain. */
-const COMMAND_END = String.raw`(?![${WORD}/@'’-]|\.[${WORD}])`;
+const COMMAND_END = String.raw`(?![${WORD}_/@'’+%=-]|\.[${WORD}])`;
 
-/**
- * Every trigger, with the bare command in the `bare` group: it counts only at the start
- * of a body line, which the caller checks for a match at the start of a prose segment.
- */
-function botTriggerPattern(
-  botUsername: string,
-  command: string | undefined,
-  flags: string
-): RegExp | null {
+/** The triggers that count anywhere in prose: mentions, and the slash command. */
+function botTriggerPattern(botUsername: string, command: string | null): RegExp | null {
   const raw = botHandle(botUsername);
-  const short = botCommand(command);
+  const short = command;
   if (!raw && !short) return null;
   const alternatives: string[] = [];
   if (raw) {
@@ -76,32 +75,24 @@ function botTriggerPattern(
     alternatives.push(`${before}@${handle}${afterPlain}`);
   }
   if (short) {
-    const name = escapeRegExp(short);
-    // The slash command is not part of a path, a URL or an email.
-    alternatives.push(String.raw`(?<![${WORD}.%+/@~:-])/${name}${COMMAND_END}`);
-    // The bare command takes its line's indent and the spaces after it, so a strip
-    // leaves the rest of the line at its start.
-    alternatives.push(String.raw`(?<bare>^[ \t]{0,3}${name}${COMMAND_END}[ \t]*)`);
+    // The slash command follows a space or a line start, so it is not part of a path, a
+    // URL, a link target or an email.
+    alternatives.push(String.raw`(?<!\S)/${escapeRegExp(short)}${COMMAND_END}`);
   }
-  return new RegExp(alternatives.join("|"), `${flags}imu`);
-}
-
-/** The shortest way to call the bot: its short command where set, otherwise `@handle`. */
-export function botTrigger(botUsername: string, command: string | undefined): string {
-  return botCommand(command) ?? `@${botHandle(botUsername)}`;
+  return new RegExp(alternatives.join("|"), "giu");
 }
 
 /**
- * A trigger at the start of a trimmed line, as a regex source for line commands:
- * `@my-app`, `@my-app[bot]`, `/ma` or `ma`.
+ * The bare command at a line start, in lower case exactly. It takes the line's indent and
+ * the spaces after it, so a strip leaves the rest of the line at its start.
  */
-export function lineTriggerSource(botUsername: string, command: string | undefined): string {
-  const forms: string[] = [];
-  const raw = botHandle(botUsername);
-  if (raw) forms.push(String.raw`@${escapeRegExp(raw)}(?:\[bot\])?`);
-  const short = botCommand(command);
-  if (short) forms.push(String.raw`\/?${escapeRegExp(short)}`);
-  return forms.length > 0 ? `(?:${forms.join("|")})` : "(?!)";
+function bareCommandPattern(command: string): RegExp {
+  return new RegExp(String.raw`[ \t]{0,3}${escapeRegExp(command)}${COMMAND_END}[ \t]*`, "uy");
+}
+
+/** The shortest way to call the bot: its short command where set, otherwise `@handle`. */
+export function botTrigger(botUsername: string, command: string | null | undefined): string {
+  return parseBotCommand(command) ?? `@${botHandle(botUsername)}`;
 }
 
 /** Node types whose text is never prose: code blocks and inline code. */
@@ -174,15 +165,58 @@ interface MarkdownNode {
   children?: MarkdownNode[];
 }
 
+/** Where code is, and where a line command may start. */
+interface BodyLayout {
+  ranges: Array<[number, number]>;
+  /** Offsets of the lines that may hold a line command, in order. */
+  commandLines: number[];
+}
+
+/** The offsets in `body[start, end)` that start a line: after `\n`, or a lone `\r`. */
+function lineStarts(body: string, start: number, end: number): number[] {
+  const starts = [start];
+  for (let i = start; i < end - 1; i++) {
+    if (body[i] === "\n" || (body[i] === "\r" && body[i + 1] !== "\n")) starts.push(i + 1);
+  }
+  return starts;
+}
+
+const DETAILS_OPEN = /^<details(?=[\s>])/i;
+const DETAILS_CLOSE = /^<\/details\s*>/i;
+
 /**
- * Code ranges from a CommonMark parse with GFM tables. (The GFM footnote and
- * autolink extensions are left out: footnotes scan backwards quadratically on
- * bracket-heavy input, and the autolink transform recurses on deep nesting.)
+ * A command line is a line of a top-level paragraph outside `<details>`: never a quote, a
+ * list item or its continuation, a heading (setext included), a table or code.
  */
-function parsedCodeRanges(body: string): Array<[number, number]> {
+function paragraphLines(body: string, tree: MarkdownNode): number[] {
+  const lines: number[] = [];
+  let details = 0;
+  for (const node of tree.children ?? []) {
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (start === undefined || end === undefined) continue;
+    if (node.type === "html") {
+      for (const [tagStart, tagEnd] of htmlTags(body, start, end)) {
+        const tag = body.slice(tagStart, tagEnd);
+        if (DETAILS_OPEN.test(tag)) details++;
+        else if (DETAILS_CLOSE.test(tag)) details = Math.max(0, details - 1);
+      }
+    } else if (node.type === "paragraph" && details === 0) {
+      lines.push(...lineStarts(body, start, end));
+    }
+  }
+  return lines;
+}
+
+/**
+ * Code ranges and command lines from a CommonMark parse with GFM tables. (The GFM
+ * footnote and autolink extensions are left out: footnotes scan backwards quadratically
+ * on bracket-heavy input, and the autolink transform recurses on deep nesting.)
+ */
+function parsedLayout(body: string): BodyLayout {
   const ranges: Array<[number, number]> = [];
   const openHtml = new Map<string, { depth: number; start: number }>();
-  const tree = fromMarkdown(body, {
+  const tree: MarkdownNode = fromMarkdown(body, {
     extensions: [gfmTable()],
     mdastExtensions: [gfmTableFromMarkdown()],
   });
@@ -208,7 +242,7 @@ function parsedCodeRanges(body: string): Array<[number, number]> {
     }
     for (let i = (node.children?.length ?? 0) - 1; i >= 0; i--) stack.push(node.children![i]);
   }
-  return ranges;
+  return { ranges, commandLines: paragraphLines(body, tree) };
 }
 
 /**
@@ -272,6 +306,32 @@ function trackHtmlCode(
   }
 }
 
+/** Whether a line is a setext underline or a table delimiter row, by two linear tests. */
+function isUnderline(line: string): boolean {
+  return /^[ \t|:=-]*$/.test(line) && /[=-]/.test(line);
+}
+
+/**
+ * The linear fallback's layout. Without a parse, the only command line it trusts is the
+ * first non-blank one, which nothing above can quote, list, fence or hide; it still is not
+ * one when the next line makes it a heading or a table header.
+ */
+function fallbackLayout(body: string): BodyLayout {
+  const ranges = fencedRanges(body);
+  let start = 0;
+  while (start < body.length) {
+    const end = body.indexOf("\n", start);
+    const lineEnd = end < 0 ? body.length : end;
+    if (body.slice(start, lineEnd).trim() !== "") break;
+    start = lineEnd + 1;
+  }
+  if (start >= body.length) return { ranges, commandLines: [] };
+  const firstEnd = body.indexOf("\n", start);
+  const nextEnd = firstEnd < 0 ? -1 : body.indexOf("\n", firstEnd + 1);
+  const next = firstEnd < 0 ? "" : body.slice(firstEnd + 1, nextEnd < 0 ? body.length : nextEnd);
+  return { ranges, commandLines: isUnderline(next) ? [] : [start] };
+}
+
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/s;
 
 /**
@@ -305,27 +365,32 @@ function fencedRanges(body: string): Array<[number, number]> {
   return ranges;
 }
 
-/** The last body segmented: a trigger check is usually followed by a strip. */
-let lastSegmented: { body: string; parts: ProsePart[] } | null = null;
+/** The last body laid out: a trigger check is usually followed by a strip. */
+let lastSegmented: { body: string; segmented: Segmented } | null = null;
 
 interface ProsePart {
+  /** Offset of the part in the body. */
+  start: number;
   text: string;
-  /** Whether the part begins a line of the body, rather than following code on it. */
-  atLineStart: boolean;
   /** Code that follows the part, exactly as written; empty after the last part. */
   code: string;
 }
 
-/** Prose parts of the body, each followed by the code after it. */
-function segments(body: string): ProsePart[] {
-  if (lastSegmented?.body === body) return lastSegmented.parts;
-  const parts = computeSegments(body);
-  lastSegmented = { body, parts };
-  return parts;
+interface Segmented {
+  parts: ProsePart[];
+  commandLines: number[];
 }
 
-function computeSegments(body: string): ProsePart[] {
-  const ranges = parseIsBounded(body) ? parsedCodeRanges(body) : fencedRanges(body);
+/** Prose parts of the body, each followed by the code after it, and its command lines. */
+function segments(body: string): Segmented {
+  if (lastSegmented?.body === body) return lastSegmented.segmented;
+  const segmented = computeSegments(body);
+  lastSegmented = { body, segmented };
+  return segmented;
+}
+
+function computeSegments(body: string): Segmented {
+  const { ranges, commandLines } = parseIsBounded(body) ? parsedLayout(body) : fallbackLayout(body);
   ranges.sort((x, y) => x[0] - y[0]);
   // Overlapping or touching ranges (a <code> element and its tags) become one.
   const merged: Array<[number, number]> = [];
@@ -336,16 +401,12 @@ function computeSegments(body: string): ProsePart[] {
   }
   const parts: ProsePart[] = [];
   let cursor = 0;
-  const prose = (end: number, code: string): void => {
-    const atLineStart = cursor === 0 || body[cursor - 1] === "\n";
-    parts.push({ text: body.slice(cursor, end), atLineStart, code });
-  };
   for (const [start, end] of merged) {
-    prose(start, body.slice(start, end));
+    parts.push({ start: cursor, text: body.slice(cursor, start), code: body.slice(start, end) });
     cursor = end;
   }
-  prose(body.length, "");
-  return parts;
+  parts.push({ start: cursor, text: body.slice(cursor), code: "" });
+  return { parts, commandLines };
 }
 
 /**
@@ -353,17 +414,43 @@ function computeSegments(body: string): ProsePart[] {
  * ordinary comments cost a substring check; GitHub caps comments at 65,536
  * characters, which bounds the parse for the rest.
  */
-function mayTrigger(body: string, botUsername: string, command: string | undefined): boolean {
+function mayTrigger(body: string, botUsername: string, command: string | null): boolean {
   const text = body.toLowerCase();
   const handle = botHandle(botUsername).toLowerCase();
-  const short = botCommand(command)?.toLowerCase();
-  return (Boolean(handle) && text.includes(`@${handle}`)) || (!!short && text.includes(short));
+  return (Boolean(handle) && text.includes(`@${handle}`)) || (!!command && text.includes(command));
 }
 
-/** The matches in a prose part that are triggers: the bare command only at a line start. */
-function* triggers(part: ProsePart, pattern: RegExp): Generator<RegExpExecArray> {
-  for (const match of part.text.matchAll(pattern)) {
-    if (match.groups?.bare === undefined || match.index > 0 || part.atLineStart) yield match;
+interface TriggerMatch {
+  /** Offset in the part's text. */
+  index: number;
+  length: number;
+}
+
+/**
+ * The triggers in each prose part, in order: the anywhere triggers, and the bare command
+ * where a command line starts in the part.
+ */
+function* partTriggers(
+  body: string,
+  botUsername: string,
+  command: string | null
+): Generator<{ part: ProsePart; matches: TriggerMatch[] }> {
+  const pattern = botTriggerPattern(botUsername, command);
+  const bare = command ? bareCommandPattern(command) : null;
+  const { parts, commandLines } = segments(body);
+  let line = 0;
+  for (const part of parts) {
+    const matches: TriggerMatch[] = pattern
+      ? Array.from(part.text.matchAll(pattern), (m) => ({ index: m.index, length: m[0].length }))
+      : [];
+    const end = part.start + part.text.length;
+    while (line < commandLines.length && commandLines[line] < part.start) line++;
+    for (; bare && line < commandLines.length && commandLines[line] < end; line++) {
+      bare.lastIndex = commandLines[line] - part.start;
+      const match = bare.exec(part.text);
+      if (match) matches.push({ index: match.index, length: match[0].length });
+    }
+    yield { part, matches: matches.sort((x, y) => x.index - y.index) };
   }
 }
 
@@ -371,28 +458,79 @@ function* triggers(part: ProsePart, pattern: RegExp): Generator<RegExpExecArray>
 export function containsBotMention(
   body: string,
   botUsername: string | undefined,
-  command?: string
+  command?: string | null
 ): boolean {
-  if (!botUsername || !mayTrigger(body, botUsername, command)) return false;
-  const pattern = botTriggerPattern(botUsername, command, "g");
-  if (!pattern) return false;
-  return segments(body).some((part) => !triggers(part, pattern).next().done);
+  const short = parseBotCommand(command);
+  if (!botUsername || !mayTrigger(body, botUsername, short)) return false;
+  for (const { matches } of partTriggers(body, botUsername, short)) {
+    if (matches.length > 0) return true;
+  }
+  return false;
 }
 
 /** Remove the bot's triggers from prose; code is left exactly as written. */
-export function stripBotMention(body: string, botUsername: string, command?: string): string {
-  const pattern = mayTrigger(body, botUsername, command)
-    ? botTriggerPattern(botUsername, command, "g")
-    : null;
-  if (!pattern) return body.trim();
+export function stripBotMention(
+  body: string,
+  botUsername: string,
+  command?: string | null
+): string {
+  const short = parseBotCommand(command);
+  if (!mayTrigger(body, botUsername, short)) return body.trim();
   let stripped = "";
-  for (const part of segments(body)) {
+  for (const { part, matches } of partTriggers(body, botUsername, short)) {
     let cursor = 0;
-    for (const match of triggers(part, pattern)) {
+    for (const match of matches) {
       stripped += part.text.slice(cursor, match.index);
-      cursor = match.index + match[0].length;
+      cursor = match.index + match.length;
     }
     stripped += part.text.slice(cursor) + part.code;
   }
   return stripped.trim();
+}
+
+/**
+ * The rest of each command line that starts with a trigger (`@my-app`, `@my-app[bot]`,
+ * `/ma`, or `ma` in lower case), to the end of its line, for line commands such as an
+ * override. Only command lines count, so a trigger hidden in an HTML comment, code, a
+ * quote or `<details>` is never one.
+ */
+export function lineCommands(body: string, botUsername: string, command?: string | null): string[] {
+  const short = parseBotCommand(command);
+  if (!mayTrigger(body, botUsername, short)) return [];
+  const forms: string[] = [];
+  const raw = botHandle(botUsername);
+  if (raw) forms.push(String.raw`@${escapeRegExp(raw)}(?:\[bot\])?`);
+  if (short) forms.push(String.raw`\/${escapeRegExp(short)}`);
+  const anyCase = new RegExp(String.raw`[ \t]{0,3}(?:${forms.join("|")})(?=[ \t]|$)`, "iy");
+  const bare = short
+    ? new RegExp(String.raw`[ \t]{0,3}${escapeRegExp(short)}(?=[ \t]|$)`, "y")
+    : null;
+  const { parts, commandLines } = segments(body);
+  const rests: string[] = [];
+  let partIndex = 0;
+  for (const lineStart of commandLines) {
+    while (partIndex < parts.length - 1 && parts[partIndex + 1].start <= lineStart) partIndex++;
+    const part = parts[partIndex];
+    // A command line that starts inside code (an inline span) holds no command.
+    if (lineStart > part.start + part.text.length) continue;
+    const lineEnd = nextLineBreak(body, lineStart);
+    const line = body.slice(lineStart, lineEnd);
+    for (const pattern of bare ? [anyCase, bare] : [anyCase]) {
+      pattern.lastIndex = 0;
+      const match = pattern.exec(line);
+      if (match) {
+        rests.push(line.slice(match[0].length));
+        break;
+      }
+    }
+  }
+  return rests;
+}
+
+/** The offset of the line break that ends the line starting at `start`. */
+function nextLineBreak(body: string, start: number): number {
+  for (let i = start; i < body.length; i++) {
+    if (body[i] === "\n" || body[i] === "\r") return i;
+  }
+  return body.length;
 }
