@@ -46,9 +46,11 @@ export interface Env {
 }
 
 export type {
+  CheckRunPayload,
   IssueCommentPayload,
   PullRequestOpenedPayload,
+  PullRequestChangedPayload,
   ReviewCommentPayload,
   ReviewRequestedPayload,
-  ReviewSubmittedPayload,
+  CheckSuitePayload,
 } from "./payload-schemas";

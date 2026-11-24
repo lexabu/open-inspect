@@ -13,11 +13,14 @@ import { verifyWebhookSignature } from "./verify";
 import { normalizeGitHubEvent } from "@open-inspect/shared/triggers";
 import { signedControlPlaneFetch } from "./internal-auth";
 import {
+  baseChangePayloadSchema,
+  checkRunPayloadSchema,
+  checkSuitePayloadSchema,
   issueCommentPayloadSchema,
   pullRequestOpenedPayloadSchema,
+  pullRequestChangedPayloadSchema,
   reviewCommentPayloadSchema,
   reviewRequestedPayloadSchema,
-  reviewSubmittedPayloadSchema,
   webhookActionPayloadSchema,
   webhookSummaryPayloadSchema,
   type WebhookSummaryPayload,
@@ -25,13 +28,14 @@ import {
 import {
   handlePullRequestOpened,
   handleReviewRequested,
-  handleReviewApproved,
+  handleCheckRunReviewRequested,
+  handleCheckSuiteRerequested,
   handleIssueComment,
   handleReviewComment,
   isReviewRequestedForBot,
-  isApprovalReview,
   type HandlerResult,
 } from "./handlers";
+import { handlePullRequestChanged } from "./review-gate";
 import { createKvCacheStore } from "@open-inspect/shared/cache-store";
 import { toAutofixEnvelope } from "./autofix-ingress";
 
@@ -181,6 +185,11 @@ const COMMENTED_SKIP_REASONS: ReadonlySet<string> = new Set([
   "invalid_inline_flags",
   "model_preferences_unavailable",
   "harness_model_incompatible",
+  "override_missing_reason",
+  "override_by_author",
+  "override_not_authorized",
+  "override_wrong_commit",
+  "override_shared_head",
 ]);
 
 async function handleWebhook(
@@ -297,6 +306,11 @@ async function handleWebhook(
   if (forwardingFailure !== undefined) throw forwardingFailure.error;
 }
 
+function isBaseChange(payload: unknown): boolean {
+  const parsed = baseChangePayloadSchema.safeParse(payload);
+  return parsed.success && parsed.data.changes?.base !== undefined;
+}
+
 function dispatchHandler(
   env: Env,
   log: Logger,
@@ -307,10 +321,20 @@ function dispatchHandler(
 ): Promise<HandlerResult> {
   switch (event) {
     case "pull_request":
-      if (p.action === "opened") {
+      if (p.action === "opened" || p.action === "ready_for_review") {
         const parsed = pullRequestOpenedPayloadSchema.safeParse(payload);
-        if (!parsed.success) throw new Error("Malformed pull_request opened payload");
+        if (!parsed.success) throw new Error(`Malformed pull_request ${p.action} payload`);
         return handlePullRequestOpened(env, log, parsed.data, traceId);
+      }
+      // A retargeted base changes the diff just as a push does; other edits do not.
+      if (
+        p.action === "synchronize" ||
+        p.action === "reopened" ||
+        (p.action === "edited" && isBaseChange(payload))
+      ) {
+        const parsed = pullRequestChangedPayloadSchema.safeParse(payload);
+        if (!parsed.success) throw new Error(`Malformed pull_request ${p.action} payload`);
+        return handlePullRequestChanged(env, log, parsed.data, traceId);
       }
       if (p.action === "review_requested") {
         if (!isReviewRequestedForBot(payload, env.GITHUB_BOT_USERNAME)) {
@@ -334,14 +358,21 @@ function dispatchHandler(
         outcome: "skipped",
         skip_reason: "unsupported_action",
       });
-    case "pull_request_review":
-      if (p.action === "submitted") {
-        if (!isApprovalReview(payload)) {
-          return Promise.resolve({ outcome: "skipped", skip_reason: "review_not_approval" });
-        }
-        const parsed = reviewSubmittedPayloadSchema.safeParse(payload);
-        if (!parsed.success) throw new Error("Malformed pull_request_review submitted payload");
-        return handleReviewApproved(env, log, parsed.data, traceId);
+    case "check_suite":
+      if (p.action === "rerequested") {
+        const parsed = checkSuitePayloadSchema.safeParse(payload);
+        if (!parsed.success) throw new Error("Malformed check_suite rerequested payload");
+        return handleCheckSuiteRerequested(env, log, parsed.data, traceId);
+      }
+      return Promise.resolve({
+        outcome: "skipped",
+        skip_reason: "unsupported_action",
+      });
+    case "check_run":
+      if (p.action === "rerequested" || p.action === "requested_action") {
+        const parsed = checkRunPayloadSchema.safeParse(payload);
+        if (!parsed.success) throw new Error(`Malformed check_run ${p.action} payload`);
+        return handleCheckRunReviewRequested(env, log, parsed.data, traceId);
       }
       return Promise.resolve({
         outcome: "skipped",

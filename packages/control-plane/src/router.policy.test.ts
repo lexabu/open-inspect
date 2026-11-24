@@ -15,6 +15,13 @@ function routeFor(method: string, path: string) {
   return matchRoute(routes, method, path)?.route;
 }
 
+/** The AI Review merge gate: called by the GitHub bot itself, never on behalf of a person. */
+const REVIEW_GATE_PATHS = [
+  "/github/review-gate/reviews",
+  "/github/review-gate/pull-changes",
+  "/github/review-gate/overrides",
+];
+
 describe("route policy table", () => {
   it("declares narrow actorless GitHub routing with a repository permission", () => {
     expect(routeFor("GET", "/github/route")).toMatchObject({
@@ -40,11 +47,11 @@ describe("route policy table", () => {
   });
 
   it("publishes the complete canonical route catalog", () => {
-    expect(routes).toHaveLength(259);
+    expect(routes).toHaveLength(262);
 
     const paths = routes.map((route) => route.path);
-    expect(new Set(paths).size).toBe(198);
-    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(259);
+    expect(new Set(paths).size).toBe(201);
+    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(262);
     expect(routeFor("POST", "/sessions/session-1/sandbox-memory/search")).toMatchObject({
       authentication: { kind: "sandbox" },
       supportedScmProviders: "all",
@@ -236,7 +243,7 @@ describe("route policy table", () => {
           "service",
         ]).toContain(authentication);
         if (authentication === "service") {
-          expect(route.path).toBe("/github/route");
+          expect(["/github/route", ...REVIEW_GATE_PATHS]).toContain(route.path);
           expect(route.serviceActorClaims).toBeDefined();
         }
         expect(authorization.allOf.length).toBeGreaterThan(0);
@@ -286,6 +293,9 @@ describe("route policy table", () => {
     ["GET", "/environments", [{ service: "slack-bot" }, { service: "linear-bot" }]],
     ["GET", "/environments/env-1", [{ service: "github-bot" }]],
     ["GET", "/github/route", [{ service: "github-bot" }]],
+    ["POST", "/github/review-gate/reviews", [{ service: "github-bot" }]],
+    ["POST", "/github/review-gate/pull-changes", [{ service: "github-bot" }]],
+    ["POST", "/github/review-gate/overrides", [{ service: "github-bot" }]],
     [
       "GET",
       "/integration-settings/slack",
@@ -349,6 +359,7 @@ describe("route policy table", () => {
       routeFor("GET", "/environments"),
       routeFor("GET", "/environments/env-1"),
       routeFor("GET", "/github/route"),
+      ...REVIEW_GATE_PATHS.map((path) => routeFor("POST", path)),
       routeFor("GET", "/integration-settings/slack"),
       routeFor("GET", "/integration-settings/github/resolved/acme/widgets"),
       routeFor("GET", "/integration-settings/slack/watched-channels"),

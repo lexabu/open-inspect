@@ -1,3 +1,4 @@
+import { sessionAccessRow } from "../authorization/session-access-row";
 import { checkSessionAccess } from "@open-inspect/shared";
 import { AuthorizationService } from "../authorization/service";
 import {
@@ -27,7 +28,7 @@ export async function assertMcpUserAccess(
   ]);
   if (!session || authorization.suspendedAt !== null) throw new McpError("mcp_denied");
   const mode = parseTeamsEnforcementMode(env.TEAMS_ENFORCEMENT);
-  const row = { ...session, ownerUserId: session.userId ?? null, collaboratorIds };
+  const row = sessionAccessRow(session, collaboratorIds);
   const viewer = {
     kind: "user" as const,
     userId,

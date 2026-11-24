@@ -27,6 +27,17 @@ export interface IntegrationEntry<
   repo: TRepo;
 }
 
+/**
+ * The `AI Review` check run on a pull request's head commit: `shadow` reports the bot's
+ * verdict without ever failing, `required` fails or asks for a review until the bot
+ * approves that exact commit.
+ */
+export const githubMergeGateSchema = z.enum(["off", "shadow", "required"], {
+  error: "mergeGate must be off, shadow or required",
+});
+
+export type GitHubMergeGate = z.infer<typeof githubMergeGateSchema>;
+
 /** Overridable behavior settings for GitHub Autofix. */
 export const githubAutofixAttemptLimitSchema = z.number().int().positive().safe().nullable();
 
@@ -95,12 +106,8 @@ export const githubBotSettingsSchema = z.strictObject({
    * or wherever branch protection should never see the bot's verdict).
    */
   commentOnlyReviews: z.boolean().optional(),
-  /**
-   * A human approval starts one more review, the pre-merge pass, unless the bot has
-   * already reviewed the approved head commit. With branch rules that dismiss stale
-   * approvals, the last approval is always on the code that merges.
-   */
-  reviewOnApproval: z.boolean().optional(),
+  /** The `AI Review` merge-gate check; absent means off. */
+  mergeGate: githubMergeGateSchema.optional(),
   allowedTriggerUsers: z.array(z.string()).optional(),
   codeReviewInstructions: z.string().optional(),
   commentActionInstructions: z.string().optional(),

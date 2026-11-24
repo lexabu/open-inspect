@@ -71,6 +71,11 @@ export interface SessionInitInput {
   participantCanonicalUserId: string | null;
   ownerTeamId: string | null;
   visibility: SessionVisibility;
+  /**
+   * The platform holds the session and acts on its outcome itself: it has no owner, and
+   * nobody can prompt it or change who can read it.
+   */
+  platformHeld?: boolean;
   collaboratorSourceSessionId?: string;
 
   // SCM identity
@@ -171,7 +176,11 @@ export async function initializeSession(
 
   // Step 1: D1 index (must succeed before DO init starts sandbox warming)
   const sessionStore = new SessionIndexStore(ctx.db);
-  if (input.visibility === "private" && !input.platformUserId) {
+  if (input.platformHeld) {
+    if (input.visibility !== "private" || input.platformUserId || input.ownerTeamId) {
+      throw new Error("Platform-held sessions are private and have no owner or team");
+    }
+  } else if (input.visibility === "private" && !input.platformUserId) {
     throw new Error("Private sessions require a canonical owner");
   }
   await sessionStore.create({
@@ -195,6 +204,7 @@ export async function initializeSession(
     userId: input.platformUserId,
     ownerTeamId: input.ownerTeamId,
     visibility: input.visibility,
+    platformHeld: input.platformHeld,
     collaboratorSourceSessionId: input.collaboratorSourceSessionId,
     privateCreationActor:
       input.visibility === "private" && input.platformUserId

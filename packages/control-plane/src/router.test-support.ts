@@ -114,6 +114,7 @@ export const TEST_SESSION_ROW: SessionRow = {
   user_id: TEST_USER_ID,
   owner_team_id: null,
   visibility: "workspace",
+  platform_held: 0,
   project_id: null,
   total_cost: 0,
   active_duration_ms: 0,

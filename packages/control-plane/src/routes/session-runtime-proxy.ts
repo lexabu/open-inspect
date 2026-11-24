@@ -1,3 +1,4 @@
+import { sessionAccessRow } from "../authorization/session-access-row";
 import { Hono } from "hono";
 import { admit } from "../routing/admit";
 import type { ControlPlaneHonoEnv } from "../routing/hono-env";
@@ -198,7 +199,7 @@ async function handleSessionSnapshot(
   const collaborators =
     ctx.sessionAdmission?.row.collaboratorIds ??
     (await new SessionCollaboratorStore(ctx.db).listUserIds(sessionId));
-  const accessRow = { ...row, ownerUserId: row.userId ?? null, collaboratorIds: collaborators };
+  const accessRow = { ...row, ...sessionAccessRow(row, collaborators) };
   const sandboxAllowed = resolverDecides(teamsEnforcementMode(ctx, env), accessRow, "sandbox")
     ? checkSessionAccess(viewer, accessRow, "sandbox").allowed
     : ctx.authorization?.permissions.includes("sessions.sandbox_access");

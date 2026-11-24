@@ -182,6 +182,7 @@ describe("cross-reader D1 session visibility", () => {
           ownerTeamId: null,
           visibility: "private",
           collaboratorIds: [],
+          platformHeld: false,
         },
         "read"
       )

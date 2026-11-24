@@ -2,6 +2,7 @@
  * Automation invocation and run read routes.
  */
 
+import { sessionAccessRow } from "../authorization/session-access-row";
 import { checkSessionAccess } from "@open-inspect/shared";
 import {
   MAX_AUTOMATION_INVOCATION_LIST_LIMIT,
@@ -60,13 +61,7 @@ async function readableRunSessionIds(
   for (const [sessionId, session] of sessions) {
     const read = checkSessionAccess(
       viewer,
-      {
-        id: sessionId,
-        ownerUserId: session.userId ?? null,
-        ownerTeamId: session.ownerTeamId,
-        visibility: session.visibility,
-        collaboratorIds: collaborators.get(sessionId) ?? [],
-      },
+      sessionAccessRow(session, collaborators.get(sessionId) ?? []),
       "read"
     );
     if (!read.allowed) continue;

@@ -204,70 +204,25 @@ export async function postIssueComment(
   }
 }
 
-const pullRequestReviewsResponseSchema = z.array(
-  z.object({
-    user: z.object({ login: z.string() }).nullable(),
-    commit_id: z.string().nullable(),
-    state: z.string(),
-  })
-);
-
-const REVIEWS_PAGE_SIZE = 100;
-const MAX_REVIEW_PAGES = 10;
-
-/**
- * The reviewer login, reviewed commit and state of each review on a pull request,
- * oldest first, or null when GitHub cannot be read.
- */
-export async function listPullRequestReviews(
-  token: string,
-  reviewsUrl: string,
-  userAgent: string = DEFAULT_APP_NAME
-): Promise<{ login: string; commitId: string; state: string }[] | null> {
-  const reviews: { login: string; commitId: string; state: string }[] = [];
-  try {
-    for (let page = 1; page <= MAX_REVIEW_PAGES; page++) {
-      const response = await fetch(`${reviewsUrl}?per_page=${REVIEWS_PAGE_SIZE}&page=${page}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-          "User-Agent": userAgent,
-        },
-        signal: AbortSignal.timeout(GITHUB_API_REQUEST_TIMEOUT_MS),
-      });
-      if (!response.ok) return null;
-      const parsed = pullRequestReviewsResponseSchema.safeParse(await response.json());
-      if (!parsed.success) return null;
-      for (const review of parsed.data) {
-        if (review.user && review.commit_id) {
-          reviews.push({
-            login: review.user.login,
-            commitId: review.commit_id,
-            state: review.state,
-          });
-        }
-      }
-      if (parsed.data.length < REVIEWS_PAGE_SIZE) return reviews;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-const pullRequestStateResponseSchema = z.object({
+const pullRequestResponseSchema = z.object({
+  number: z.number(),
   state: z.string(),
-  draft: z.boolean().optional(),
-  head: z.object({ sha: z.string() }),
+  draft: z.boolean(),
+  title: z.string(),
+  body: z.string().nullable(),
+  user: z.object({ login: z.string() }),
+  head: z.object({ ref: z.string(), sha: z.string() }),
+  base: z.object({ ref: z.string(), sha: z.string() }),
 });
 
-/** A pull request's live state, draft flag and head commit, or null when unreadable. */
-export async function getPullRequestState(
+export type LivePullRequest = z.infer<typeof pullRequestResponseSchema>;
+
+/** A pull request as GitHub has it now, or null when unreadable. */
+export async function getPullRequest(
   token: string,
   pullUrl: string,
   userAgent: string = DEFAULT_APP_NAME
-): Promise<{ state: string; draft: boolean; headSha: string } | null> {
+): Promise<LivePullRequest | null> {
   try {
     const response = await fetch(pullUrl, {
       headers: {
@@ -279,10 +234,8 @@ export async function getPullRequestState(
       signal: AbortSignal.timeout(GITHUB_API_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) return null;
-    const parsed = pullRequestStateResponseSchema.safeParse(await response.json());
-    if (!parsed.success) return null;
-    const { state, draft = false, head } = parsed.data;
-    return { state, draft, headSha: head.sha };
+    const parsed = pullRequestResponseSchema.safeParse(await response.json());
+    return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }

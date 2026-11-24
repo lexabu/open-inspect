@@ -8,8 +8,10 @@ import type { Logger } from "../logger";
 import { z } from "zod";
 import { DEFAULT_HARNESS, harnessIdSchema, type HarnessId } from "@open-inspect/shared/harnesses";
 import {
+  githubMergeGateSchema,
   githubReviewerSchema,
   MAX_GITHUB_REVIEWERS,
+  type GitHubMergeGate,
   type GitHubReviewer,
 } from "@open-inspect/shared/types/integrations";
 
@@ -21,8 +23,8 @@ export interface ResolvedGitHubConfig {
   reviewers: GitHubReviewer[] | null;
   /** Reviews and comment actions post COMMENT only, never APPROVE or REQUEST_CHANGES. */
   commentOnlyReviews: boolean;
-  /** A human approval starts the pre-merge review unless the head is already reviewed. */
-  reviewOnApproval: boolean;
+  /** The AI Review check run on each pull request head; off posts no check. */
+  mergeGate: GitHubMergeGate;
   autoReviewOnOpen: boolean;
   enabledRepos: string[] | null;
   allowedTriggerUsers: string[] | null;
@@ -46,8 +48,8 @@ const resolvedGitHubConfigResponseSchema = z.object({
         .default(null),
       // Control planes that predate comment-only reviews omit it.
       commentOnlyReviews: z.boolean().default(false),
-      // Control planes that predate pre-merge reviews omit it.
-      reviewOnApproval: z.boolean().default(false),
+      // Control planes that predate the merge gate omit it.
+      mergeGate: githubMergeGateSchema.default("off"),
       autoReviewOnOpen: z.boolean(),
       enabledRepos: z.array(z.string()).nullable(),
       allowedTriggerUsers: z.array(z.string()).nullable(),
@@ -62,7 +64,7 @@ const FAIL_CLOSED: Omit<ResolvedGitHubConfig, "model"> = {
   reasoningEffort: null,
   reviewers: null,
   commentOnlyReviews: true,
-  reviewOnApproval: false,
+  mergeGate: "off",
   autoReviewOnOpen: false,
   enabledRepos: [],
   allowedTriggerUsers: [],
@@ -132,7 +134,7 @@ export async function getGitHubConfig(
       reasoningEffort: null,
       reviewers: null,
       commentOnlyReviews: false,
-      reviewOnApproval: false,
+      mergeGate: "off",
       autoReviewOnOpen: true,
       enabledRepos: null,
       allowedTriggerUsers: null,
@@ -147,7 +149,7 @@ export async function getGitHubConfig(
     reasoningEffort: data.config.reasoningEffort,
     reviewers: data.config.reviewers,
     commentOnlyReviews: data.config.commentOnlyReviews,
-    reviewOnApproval: data.config.reviewOnApproval,
+    mergeGate: data.config.mergeGate,
     autoReviewOnOpen: data.config.autoReviewOnOpen,
     enabledRepos: data.config.enabledRepos,
     allowedTriggerUsers: data.config.allowedTriggerUsers,

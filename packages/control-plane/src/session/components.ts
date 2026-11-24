@@ -1,3 +1,6 @@
+import { createReviewGate } from "../github-review/factory";
+import { finalResponseText } from "./http/handlers/child-session-summary";
+import { sessionAccessRow } from "../authorization/session-access-row";
 import { SessionMcpContext } from "./mcp-context";
 /**
  * Composition root for one session runtime.
@@ -420,6 +423,14 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     },
     env,
     completeAutomationRun: (completion) => scheduler.runComplete(completion),
+    // The verdict is read here, from this session's own events: nothing a person or
+    // another session wrote can stand in for it.
+    completeGitHubReview: ({ sessionId, messageId, success }) =>
+      createReviewGate(env, db).sessionCompleted({
+        sessionId,
+        success,
+        finalMessage: finalResponseText(eventRepository, messageId) ?? "",
+      }),
     log,
     getSessionId: () => resolvePublicSessionId(sessionCoreRepository.getSession(), durableObjectId),
   });
@@ -932,13 +943,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
             suspended: false,
             memberships,
           },
-          row: {
-            id: session.id,
-            ownerUserId: session.userId ?? null,
-            ownerTeamId: session.ownerTeamId,
-            visibility: session.visibility,
-            collaboratorIds,
-          },
+          row: sessionAccessRow(session, collaboratorIds),
         };
       } catch (error) {
         if (error instanceof AuthorizationError) return { kind: "rejected" };

@@ -18,6 +18,7 @@ describe("auditSocketShadowDenied", () => {
       ownerTeamId: "team",
       visibility: "team",
       collaboratorIds: [],
+      platformHeld: false,
     };
 
     await auditSocketShadowDenied(db, "canonical-user", row, "not_member", "ws-1");

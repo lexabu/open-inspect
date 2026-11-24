@@ -410,7 +410,7 @@ async function handleGetResolvedConfig(
         allowedTriggerUsers: githubSettings.allowedTriggerUsers ?? null,
         codeReviewInstructions: githubSettings.codeReviewInstructions ?? null,
         commentOnlyReviews: githubSettings.commentOnlyReviews ?? false,
-        reviewOnApproval: githubSettings.reviewOnApproval ?? false,
+        mergeGate: githubSettings.mergeGate ?? "off",
         commentActionInstructions: githubSettings.commentActionInstructions ?? null,
       },
     });

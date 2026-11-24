@@ -75,7 +75,11 @@ function tokenEntry(token: string) {
 }
 
 function mintResponse(token = "fresh-token") {
-  return Response.json({ token, expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString() });
+  return Response.json({
+    token,
+    expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    permissions: { contents: "write" },
+  });
 }
 
 describe("installation token scopes", () => {
@@ -148,6 +152,7 @@ describe("installation token persistent cache writes", () => {
       Response.json({
         token: "short-lived-token",
         expires_at: new Date(Date.now() + 30 * 1000).toISOString(),
+        permissions: { contents: "write" },
       })
     );
     const token = await auth.getCachedInstallationToken(

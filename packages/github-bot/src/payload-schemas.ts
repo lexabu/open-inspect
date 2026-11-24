@@ -7,6 +7,8 @@ const githubUserSchema = z.object({
 const githubSenderSchema = githubUserSchema.extend({
   id: z.number(),
   avatar_url: z.string(),
+  // "User", "Bot" or "Organization".
+  type: z.string().optional(),
 });
 
 const repositorySchema = z.object({
@@ -43,8 +45,9 @@ const reviewedPullRequestSchema = pullRequestSchema.extend({
   base: z.object({ ref: z.string(), sha: commitShaSchema }),
 });
 
+/** A PR that became reviewable: opened, or moved out of draft. */
 export const pullRequestOpenedPayloadSchema = z.object({
-  action: z.literal("opened"),
+  action: z.enum(["opened", "ready_for_review"]),
   pull_request: reviewedPullRequestSchema.extend({ draft: z.boolean() }),
   repository: repositorySchema,
   sender: githubSenderSchema,
@@ -58,15 +61,37 @@ export const reviewRequestedPayloadSchema = z.object({
   sender: githubSenderSchema,
 });
 
-export const reviewSubmittedPayloadSchema = z.object({
-  action: z.literal("submitted"),
-  review: z.object({
-    // Webhook review states are lowercase: approved, changes_requested, commented.
-    state: z.string(),
-    commit_id: commitShaSchema,
-    user: githubUserSchema.extend({ type: z.string().optional() }),
+/** A PR no review covers any more: a new head, a new base branch (`edited`), or a reopening. */
+export const pullRequestChangedPayloadSchema = z.object({
+  action: z.enum(["synchronize", "edited", "reopened"]),
+  pull_request: z.object({ number: z.number(), head: z.object({ sha: commitShaSchema }) }),
+  repository: repositorySchema,
+  sender: githubSenderSchema,
+});
+
+/** The Re-run button (`rerequested`) or a check's own button (`requested_action`). */
+export const checkRunPayloadSchema = z.object({
+  action: z.enum(["rerequested", "requested_action"]),
+  check_run: z.object({
+    name: z.string(),
+    head_sha: commitShaSchema,
+    app: z.object({ id: z.number() }),
+    // Set by the bot when it creates the run: the pull request the run belongs to.
+    external_id: z.string().nullish(),
   }),
-  pull_request: reviewedPullRequestSchema.extend({ draft: z.boolean(), state: z.string() }),
+  requested_action: z.object({ identifier: z.string() }).optional(),
+  repository: repositorySchema,
+  sender: githubSenderSchema,
+});
+
+/** "Re-run all checks" on a suite of this App's check runs. */
+export const checkSuitePayloadSchema = z.object({
+  action: z.literal("rerequested"),
+  check_suite: z.object({
+    id: z.number(),
+    head_sha: commitShaSchema,
+    app: z.object({ id: z.number() }),
+  }),
   repository: repositorySchema,
   sender: githubSenderSchema,
 });
@@ -119,9 +144,9 @@ export const requestedReviewerPayloadSchema = z
   })
   .passthrough();
 
-export const reviewStatePayloadSchema = z
+export const baseChangePayloadSchema = z
   .object({
-    review: z.object({ state: z.string() }).nullable().optional(),
+    changes: z.object({ base: z.unknown().optional() }).passthrough().optional(),
   })
   .passthrough();
 
@@ -133,7 +158,9 @@ export const webhookActionPayloadSchema = z
 
 export type PullRequestOpenedPayload = z.infer<typeof pullRequestOpenedPayloadSchema>;
 export type ReviewRequestedPayload = z.infer<typeof reviewRequestedPayloadSchema>;
-export type ReviewSubmittedPayload = z.infer<typeof reviewSubmittedPayloadSchema>;
+export type PullRequestChangedPayload = z.infer<typeof pullRequestChangedPayloadSchema>;
+export type CheckRunPayload = z.infer<typeof checkRunPayloadSchema>;
+export type CheckSuitePayload = z.infer<typeof checkSuitePayloadSchema>;
 export type IssueCommentPayload = z.infer<typeof issueCommentPayloadSchema>;
 export type ReviewCommentPayload = z.infer<typeof reviewCommentPayloadSchema>;
 export type WebhookSummaryPayload = z.infer<typeof webhookSummaryPayloadSchema>;

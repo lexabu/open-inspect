@@ -117,11 +117,33 @@ const installationTokenResponseSchema = z
   .object({
     token: z.string(),
     expires_at: z.string().refine((value) => Number.isFinite(Date.parse(value))),
+    // What the token may do. Required: without it a token cannot be shown to be capped.
+    permissions: z.record(z.string(), z.string()),
   })
-  .transform(({ token, expires_at }) => ({
+  .transform(({ token, expires_at, permissions }) => ({
     token,
     expiresAtEpochMs: Date.parse(expires_at),
+    permissions,
   }));
+
+/**
+ * Permissions that decide merge gates: check runs and commit statuses. Tokens minted
+ * here reach sandboxes and agent sessions, which must be able to read CI results but
+ * never write a result of their own, such as the GitHub bot's `AI Review` check. Only
+ * the bot's own token, minted in its worker, keeps write access.
+ */
+const GATE_PERMISSIONS = ["checks", "statuses"] as const;
+
+/** The token's permissions with gate permissions capped at read, or null when none exceeds it. */
+export function capGatePermissions(
+  permissions: Record<string, string>
+): Record<string, string> | null {
+  const exceeding = GATE_PERMISSIONS.filter(
+    (name) => permissions[name] !== undefined && permissions[name] !== "read"
+  );
+  if (exceeding.length === 0) return null;
+  return { ...permissions, ...Object.fromEntries(exceeding.map((name) => [name, "read"])) };
+}
 
 /** GitHub installation token response. */
 type InstallationTokenResponse = z.infer<typeof installationTokenResponseSchema>;
@@ -258,16 +280,20 @@ async function generateAppJwt(appId: string, privateKey: string): Promise<string
   return `${signingInput}.${encodedSignature}`;
 }
 
-/**
- * Exchange JWT for an installation access token and expiry metadata.
- */
-async function getInstallationTokenWithMetadata(
+/** Exchange JWT for an installation access token, optionally limited to `permissions`. */
+async function mintInstallationToken(
   jwt: string,
   installationId: string,
   userAgent: string,
-  scope: TokenScope
+  scope: TokenScope,
+  permissions: Record<string, string> | null
 ): Promise<InstallationTokenResponse> {
   const url = `https://api.github.com/app/installations/${installationId}/access_tokens`;
+  const body = {
+    ...(scope.kind === "repositories" ? { repository_ids: scope.repositoryIds } : {}),
+    ...(permissions ? { permissions } : {}),
+  };
+  const hasBody = Object.keys(body).length > 0;
 
   const response = await fetchWithTimeout(url, {
     method: "POST",
@@ -276,11 +302,9 @@ async function getInstallationTokenWithMetadata(
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": userAgent,
-      ...(scope.kind === "repositories" ? { "Content-Type": "application/json" } : {}),
+      ...(hasBody ? { "Content-Type": "application/json" } : {}),
     },
-    ...(scope.kind === "repositories"
-      ? { body: JSON.stringify({ repository_ids: scope.repositoryIds }) }
-      : {}),
+    ...(hasBody ? { body: JSON.stringify(body) } : {}),
   });
 
   if (!response.ok) {
@@ -305,6 +329,74 @@ async function getInstallationTokenWithMetadata(
     throw new Error("Failed to get installation token: invalid response");
   }
   return parsed.data;
+}
+
+/**
+ * An installation token that cannot write check runs or commit statuses. GitHub grants
+ * a token every permission of the installation unless the request names them, and
+ * naming one the installation lacks is refused, so the installation's own grant is
+ * read from a first token and a second is minted with the gate permissions capped.
+ * An installation without those write permissions takes one request.
+ */
+async function getInstallationTokenWithMetadata(
+  jwt: string,
+  installationId: string,
+  userAgent: string,
+  scope: TokenScope
+): Promise<InstallationTokenResponse> {
+  const granted = await mintInstallationToken(jwt, installationId, userAgent, scope, null);
+  const capped = capGatePermissions(granted.permissions);
+  if (capped === null) return granted;
+
+  const token = await mintInstallationToken(jwt, installationId, userAgent, scope, capped);
+  if (capGatePermissions(token.permissions) !== null) {
+    throw new Error("Failed to get installation token: gate permissions were not capped");
+  }
+  // The uncapped token never leaves this function. Revoking it is tidiness, so a
+  // failure here does not fail the mint; it expires within the hour either way.
+  await fetchWithTimeout("https://api.github.com/installation/token", {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${granted.token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": userAgent,
+    },
+  }).catch(() => undefined);
+  return token;
+}
+
+/**
+ * What the AI Review merge gate needs on a pull request's repository: to write check
+ * runs, and to read pull requests and their diffs. Nothing else, so a leak of this
+ * token cannot push code or post as the App.
+ */
+const REVIEW_GATE_PERMISSIONS = {
+  checks: "write",
+  pull_requests: "read",
+  contents: "read",
+  metadata: "read",
+} as const;
+
+/**
+ * A token for the AI Review merge gate on one repository. It is the only token this
+ * control plane mints that can write check runs; it is used by the gate itself, never
+ * cached with session tokens and never handed to a sandbox.
+ */
+export async function mintReviewGateToken(
+  config: GitHubAppConfig,
+  userAgent: string,
+  repositoryId: number
+): Promise<string> {
+  const jwt = await generateAppJwt(config.appId, config.privateKey);
+  const minted = await mintInstallationToken(
+    jwt,
+    config.installationId,
+    userAgent,
+    repositoryCredentialScope([repositoryId]),
+    { ...REVIEW_GATE_PERMISSIONS }
+  );
+  return minted.token;
 }
 
 export async function getInstallationTokenCacheKey(

@@ -275,6 +275,7 @@ function makeHarness(
         user_id: null,
         owner_team_id: null,
         visibility: "workspace",
+        platform_held: 0,
         project_id: null,
         active_duration_ms: 0,
         message_count: 0,

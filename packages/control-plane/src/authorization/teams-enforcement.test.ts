@@ -56,6 +56,7 @@ describe("teams enforcement", () => {
         ownerUserId: "user_one",
         visibility: "workspace",
         collaboratorIds: [],
+        platformHeld: false,
       };
       for (const roleKey of ["member", "administrator", "owner"] as const) {
         const viewer: SessionViewer = {

@@ -73,7 +73,8 @@ describe("buildCodeReviewPrompt", () => {
 
     const preMerge = buildCodeReviewPrompt({ ...baseParams, preMerge: true });
     expect(preMerge).toContain("## Pre-merge Review");
-    expect(preMerge).toContain(`A maintainer approved commit \`${baseParams.headSha}\``);
+    expect(preMerge).toContain(`asked for again on commit \`${baseParams.headSha}\``);
+    expect(preMerge).not.toContain("Verdict for the AI Review check");
   });
 
   it("lets a single reviewer approve or request changes", () => {

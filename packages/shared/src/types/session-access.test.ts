@@ -33,6 +33,7 @@ const row: SessionAccessRow = {
   ownerTeamId: "team_one",
   visibility: "team",
   collaboratorIds: ["user_collaborator"],
+  platformHeld: false,
 };
 
 function viewer(
@@ -289,6 +290,43 @@ describe("checkSessionAccess", () => {
         reason: "suspended",
       });
     }
+  });
+
+  it("lets nobody act on a platform-held session, and only a workspace Owner read it", () => {
+    // Stored owner, collaborators and visibility are ignored: the session answers to the platform.
+    for (const visibility of visibilities) {
+      const held = { ...row, visibility, platformHeld: true } satisfies SessionAccessRow;
+      for (const relation of relations) {
+        for (const roleKey of roles) {
+          const actor = viewer(relation, roleKey);
+          for (const action of SESSION_ACTIONS) {
+            const decision = checkSessionAccess(actor, held, action);
+            if (roleKey === "owner" && action === "read") {
+              expect(decision).toEqual({ allowed: true, audit: "session.private_break_glass" });
+            } else {
+              expect(decision).toEqual({ allowed: false, reason: "private" });
+            }
+          }
+        }
+      }
+      for (const teamId of [null, "team_one"]) {
+        for (const action of SESSION_ACTIONS) {
+          expect(checkSessionAccess({ kind: "service", teamId }, held, action)).toEqual({
+            allowed: false,
+            reason: "private",
+          });
+        }
+      }
+    }
+    expect(sessionCapabilities(viewer("owner", "owner"), { ...row, platformHeld: true })).toEqual({
+      canRead: true,
+      canCollaborate: false,
+      canManageLifecycle: false,
+      canDelete: false,
+      canSandbox: false,
+      canManageCollaborators: false,
+      canChangeVisibility: false,
+    });
   });
 
   it("does not mistake a null session owner for a viewer or audit a denied read", () => {

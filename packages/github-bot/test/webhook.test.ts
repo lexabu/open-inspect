@@ -7,12 +7,7 @@ vi.mock("../src/github-auth", () => ({
   postReaction: vi.fn().mockResolvedValue(true),
   postIssueComment: vi.fn().mockResolvedValue(true),
   checkSenderPermission: vi.fn().mockResolvedValue({ hasPermission: true }),
-  listPullRequestReviews: vi.fn().mockResolvedValue([]),
-  getPullRequestState: vi.fn().mockResolvedValue({
-    state: "open",
-    draft: false,
-    headSha: "a".repeat(40),
-  }),
+  getPullRequest: vi.fn(),
 }));
 
 import app from "../src/index";
@@ -40,7 +35,10 @@ const SECRET = "test-webhook-secret";
 function createMockKV() {
   const store = new Map<string, string>();
   return {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
+    get: vi.fn(async (key: string, type?: "json") => {
+      const value = store.get(key) ?? null;
+      return type === "json" && value !== null ? JSON.parse(value) : value;
+    }),
     put: vi.fn(async (key: string, value: string) => {
       store.set(key, value);
     }),
@@ -281,101 +279,6 @@ describe("POST /webhooks/github", () => {
         .mocked(env.CONTROL_PLANE.fetch)
         .mock.calls.some(([url]) => String(url) === "https://internal/sessions")
     ).toBe(false);
-  });
-
-  it("queues Autofix and starts one pre-merge review for a signed approval, once per delivery", async () => {
-    const head = "a".repeat(40);
-    const body = JSON.stringify({
-      action: "submitted",
-      review: {
-        id: 5681,
-        state: "approved",
-        commit_id: head,
-        user: { login: "bob", type: "User" },
-      },
-      pull_request: {
-        number: 42,
-        title: "Add caching",
-        body: null,
-        user: { login: "alice" },
-        head: { ref: "feature/cache", sha: head },
-        base: { ref: "main", sha: "b".repeat(40) },
-        draft: false,
-        state: "open",
-      },
-      repository: { id: 99, owner: { login: "test" }, name: "repo", private: false },
-      sender: {
-        login: "bob",
-        id: 1002,
-        avatar_url: "https://avatars.githubusercontent.com/u/1002",
-      },
-    });
-    const signature = await sign(SECRET, body);
-    const env = makeEnv();
-    const cpFetch = vi.mocked(env.CONTROL_PLANE.fetch);
-    cpFetch.mockImplementation(async (url) => {
-      const requestUrl = String(url);
-      if (requestUrl.includes("/integration-settings/github/resolved/")) {
-        return Response.json({
-          config: {
-            model: null,
-            reasoningEffort: null,
-            reviewOnApproval: true,
-            autoReviewOnOpen: true,
-            enabledRepos: null,
-            allowedTriggerUsers: null,
-            codeReviewInstructions: null,
-            commentActionInstructions: null,
-          },
-        });
-      }
-      if (requestUrl.startsWith("https://internal/github/route?")) {
-        return Response.json({ teamId: null, via: "workspace" });
-      }
-      if (requestUrl.endsWith("/metadata")) {
-        return Response.json({ repo: "test/repo", metadata: null });
-      }
-      if (requestUrl === "https://internal/sessions") {
-        return Response.json({ sessionId: "session-approve", status: "created" });
-      }
-      if (requestUrl.endsWith("/prompt")) {
-        return Response.json({ messageId: "message-approve" });
-      }
-      return new Response(null, { status: 204 });
-    });
-    const deliver = async () => {
-      const ctx = makeCtx();
-      await app.fetch(
-        new Request("http://localhost/webhooks/github", {
-          method: "POST",
-          body,
-          headers: {
-            "X-Hub-Signature-256": signature,
-            "X-GitHub-Event": "pull_request_review",
-            "X-GitHub-Delivery": "delivery-approval-5681",
-          },
-        }),
-        env,
-        ctx
-      );
-      await flushWaitUntil(ctx);
-    };
-    const sessionsCreated = () =>
-      cpFetch.mock.calls.filter(([url]) => String(url) === "https://internal/sessions").length;
-
-    await deliver();
-    expect(env.AUTOFIX_QUEUE.send).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: "pull_request_review",
-        deliveryId: "delivery-approval-5681",
-      })
-    );
-    expect(sessionsCreated()).toBe(1);
-    const prompt = cpFetch.mock.calls.find(([url]) => String(url).endsWith("/prompt"));
-    expect(JSON.parse(String(prompt?.[1]?.body)).content).toContain("## Pre-merge Review");
-
-    await deliver();
-    expect(sessionsCreated()).toBe(1);
   });
 
   it("does not queue individual review comment webhooks", async () => {

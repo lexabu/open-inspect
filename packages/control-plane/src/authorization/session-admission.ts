@@ -1,3 +1,4 @@
+import { sessionAccessRow } from "./session-access-row";
 import {
   checkSessionAccess,
   sessionCapabilities,
@@ -97,7 +98,7 @@ export async function evaluateSessionAdmission(
       slackPostGate(row, ctx.serviceTeamId ? { teamId: ctx.serviceTeamId } : null))
   ) {
     const admission = {
-      row: { ...row, ownerUserId: row.userId ?? null, collaboratorIds: [] },
+      row: { ...row, ...sessionAccessRow(row, []) },
       viewer: viewerFromContext(ctx, new Map()),
     };
     if (slot === "session") ctx.sessionAdmission = admission;
@@ -118,8 +119,7 @@ export async function evaluateSessionAdmission(
   const viewer = viewerFromContext(ctx, memberships);
   const accessRow = {
     ...row,
-    ownerUserId: row.userId ?? null,
-    collaboratorIds: await new SessionCollaboratorStore(ctx.db).listUserIds(sessionId),
+    ...sessionAccessRow(row, await new SessionCollaboratorStore(ctx.db).listUserIds(sessionId)),
   };
   if (slot === "session") ctx.sessionAdmission = { row: accessRow, viewer };
   if (slot === "child") ctx.childSessionAdmission = { row: accessRow, viewer };

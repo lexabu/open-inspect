@@ -79,7 +79,27 @@ function parseSettings<TSchema extends z.ZodType<object>>(
   return result.data;
 }
 
+/**
+ * GitHub's `reviewOnApproval` setting is gone and migration 0098 drops it from stored
+ * rows. For one release a row may still carry it: a new worker can serve before the
+ * migration runs. Reads ignore the key so that order is safe; writes still reject it.
+ */
+const LEGACY_GITHUB_SETTING = "reviewOnApproval";
+
+function isStoredObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function withoutLegacyGitHubSetting(stored: unknown): unknown {
+  if (!isStoredObject(stored)) return stored;
+  const { [LEGACY_GITHUB_SETTING]: _removed, ...settings } = stored;
+  return "defaults" in settings
+    ? { ...settings, defaults: withoutLegacyGitHubSetting(settings.defaults) }
+    : settings;
+}
+
 function parseStoredSettings<TSchema extends z.ZodType<object>>(
+  integrationId: keyof IntegrationSettingsMap,
   schema: TSchema,
   raw: string,
   description: string
@@ -90,7 +110,11 @@ function parseStoredSettings<TSchema extends z.ZodType<object>>(
   } catch {
     throw new IntegrationSettingsValidationError(`${description} are invalid: malformed JSON`);
   }
-  return parseSettings(schema, parsed, description);
+  return parseSettings(
+    schema,
+    integrationId === "github" ? withoutLegacyGitHubSetting(parsed) : parsed,
+    description
+  );
 }
 
 /** Whether an integration accepts environment-level setting overrides (design §13.5). */
@@ -113,6 +137,7 @@ export class IntegrationSettingsStore {
 
     if (!row) return null;
     const settings = parseStoredSettings(
+      integrationId,
       getIntegrationGlobalSettingsSchema(integrationId),
       row.settings,
       "Stored global integration settings"
@@ -183,6 +208,7 @@ export class IntegrationSettingsStore {
 
     if (!row) return null;
     const settings = parseStoredSettings(
+      integrationId,
       getIntegrationRepoSettingsSchema(integrationId),
       row.settings,
       "Stored repo integration settings"
@@ -238,6 +264,7 @@ export class IntegrationSettingsStore {
       settings: this.normalizeStoredRepoSettings(
         integrationId,
         parseStoredSettings(
+          integrationId,
           getIntegrationRepoSettingsSchema(integrationId),
           row.settings,
           "Stored repo integration settings"
@@ -265,6 +292,7 @@ export class IntegrationSettingsStore {
 
     if (!row) return null;
     const settings = parseStoredSettings(
+      integrationId,
       getIntegrationRepoSettingsSchema(integrationId),
       row.settings,
       "Stored environment integration settings"
@@ -510,10 +538,6 @@ export class IntegrationSettingsStore {
       typeof settings.commentOnlyReviews !== "boolean"
     ) {
       throw new IntegrationSettingsValidationError("commentOnlyReviews must be a boolean");
-    }
-
-    if (settings.reviewOnApproval !== undefined && typeof settings.reviewOnApproval !== "boolean") {
-      throw new IntegrationSettingsValidationError("reviewOnApproval must be a boolean");
     }
 
     if (

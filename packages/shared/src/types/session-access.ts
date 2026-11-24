@@ -53,6 +53,12 @@ export interface SessionAccessRow {
   ownerTeamId: string | null;
   visibility: SessionVisibility;
   collaboratorIds: readonly string[];
+  /**
+   * Held by the platform, not by a person: a session whose outcome the platform itself acts on,
+   * such as a merge-gate review. Nobody may prompt it, use its sandbox, or change who can, whatever
+   * its stored owner and visibility say; a workspace Owner's audited read is the only access.
+   */
+  platformHeld: boolean;
 }
 
 export interface SessionCapabilities {
@@ -193,11 +199,19 @@ function checkServiceSessionAccess(
   row: SessionAccessRow,
   action: SessionAction
 ): AccessDecision {
-  if (row.visibility === "private") return deny("private");
+  if (row.visibility === "private" || row.platformHeld) return deny("private");
   if (row.visibility === "team" && viewer.teamId !== null && viewer.teamId !== row.ownerTeamId) {
     return deny("not_member");
   }
   return action === "read" ? permit() : deny("missing_permission");
+}
+
+/** A platform-held session: an audited read for a workspace Owner, nothing for anyone else. */
+function checkPlatformHeldAccess(viewer: UserViewer, action: SessionAction): AccessDecision {
+  if (viewer.suspended) return deny("suspended");
+  if (viewer.roleKey !== "owner" || action !== "read") return deny("private");
+  if (!viewer.permissions.includes("sessions.read")) return deny("missing_permission");
+  return permit("session.private_break_glass");
 }
 
 /** Checks one session action using the persisted row, never session participants. */
@@ -207,6 +221,7 @@ export function checkSessionAccess(
   action: SessionAction
 ): AccessDecision {
   if (viewer.kind === "service") return checkServiceSessionAccess(viewer, row, action);
+  if (row.platformHeld) return checkPlatformHeldAccess(viewer, action);
   const facts = sessionFacts(viewer, row);
   const read = readGate(facts);
   if (read) return read;

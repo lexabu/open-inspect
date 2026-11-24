@@ -320,6 +320,31 @@ function artifactCreatedDuringMessage(artifact: ArtifactRow, message: MessageRow
   return artifact.created_at >= start && artifact.created_at <= end;
 }
 
+const TOOL_ACTIVITY = new Set(["tool_call", "tool_result"]);
+
+/**
+ * The text a turn ended with: the agent's last text, provided no tool activity followed
+ * it. Null when the turn produced no text, ended on tool activity (text from the middle
+ * of a turn is not its final word), or has more events than are read, so its last words
+ * may lie beyond them.
+ */
+export function finalResponseText(
+  source: FinalResponseEventPageSource,
+  messageId: string
+): string | null {
+  const { eventRows, eventLimitReached } = collectFinalResponseEventRows(source, messageId);
+  if (eventLimitReached) return null;
+  // The rows come newest first, in the order the event repository keeps them, which
+  // also orders events that share a timestamp.
+  const newestText = eventRows.findIndex((row) => row.type === "token");
+  const toolActivityFollowed = eventRows
+    .slice(0, Math.max(newestText, 0))
+    .some((row) => TOOL_ACTIVITY.has(row.type));
+  if (newestText === -1 || toolActivityFollowed) return null;
+  // A token event carries the text so far, so the newest one is the whole of it.
+  return String(toEventResponse(eventRows[newestText]).data.content ?? "");
+}
+
 function buildFinalResponse(
   message: MessageRow | null,
   eventRows: EventRow[],

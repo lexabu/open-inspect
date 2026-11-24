@@ -3,6 +3,9 @@ import { env } from "cloudflare:test";
 /** Clear shared D1 state in foreign-key and grant-guard order between tests. */
 export async function cleanD1Tables(): Promise<void> {
   await env.DB.exec(`
+    DELETE FROM github_review_heads;
+    DELETE FROM github_review_attempt_sessions;
+    DELETE FROM github_review_attempts;
     DELETE FROM mcp_oauth_transactions;
     DELETE FROM mcp_connections;
     DELETE FROM mcp_oauth_clients;
