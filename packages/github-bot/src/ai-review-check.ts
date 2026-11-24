@@ -114,7 +114,7 @@ export async function startCheckedReview(
     baseSha: base.sha,
     baseRef: base.ref,
     startedAt: new Date().toISOString(),
-    reviewers: models.map((model) => ({ key: crypto.randomUUID(), model })),
+    reviewers: models.map((model) => ({ key: crypto.randomUUID(), model, seen: null })),
     checkRunId: null,
     diffHash: null,
     concludedAt: null,
@@ -256,47 +256,50 @@ export async function handlePullRequestChanged(
   return processed("check_carried_forward");
 }
 
-type ReviewerVerdict = "approve" | "changes requested" | "dismissed";
-
 /**
- * A review's verdict. `CHANGES_REQUESTED` is never an approval, whatever its text says.
- * A comment-only review approves only when the approve marker is its last line, apart
- * from attempt marker lines: quoted or embedded in prose it is not a verdict.
+ * Whether a review approves, read once when it is first seen. `CHANGES_REQUESTED` and a
+ * dismissed review never approve, whatever their text says. A comment-only review
+ * approves only when the approve marker is its last line, apart from attempt marker
+ * lines: quoted or embedded in prose it is not a verdict.
  */
-function reviewerVerdict(review: PullRequestReview): ReviewerVerdict {
+function approves(review: PullRequestReview): boolean {
   const state = review.state.toUpperCase();
-  if (state === "DISMISSED") return "dismissed";
-  if (state === "APPROVED") return "approve";
-  if (state !== "COMMENTED") return "changes requested";
+  if (state === "APPROVED") return true;
+  if (state !== "COMMENTED") return false;
   const lines = review.body
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line !== "" && !line.startsWith("<!-- open-inspect:review attempt="));
-  return lines.at(-1) === ADVISORY_APPROVE_MARKER ? "approve" : "changes requested";
+  return lines.at(-1) === ADVISORY_APPROVE_MARKER;
 }
 
 /**
- * The review of each reviewer of an attempt: the first the bot posted on the attempt's
- * commit with that reviewer's marker on a line of its own. A later review with the same
- * marker never replaces it: the marker is public once posted, and a copy must not
- * override the reviewer's own verdict. A first review that was dismissed stays the
- * reviewer's review, with no verdict.
+ * The attempt's reviewers with the review of each one that has posted: the first the
+ * bot posted on the attempt's commit with that reviewer's marker on a line of its own.
+ * A later review with the same marker never replaces it: the marker is public once
+ * posted, and a copy must not override the reviewer's own verdict. Once seen, a
+ * reviewer's review and verdict are fixed.
  */
-function attemptReviews(
+function withSeenReviews(
   env: Env,
   attempt: ReviewAttempt,
   reviews: PullRequestReview[]
-): { model: string; review: PullRequestReview }[] {
+): ReviewAttempt["reviewers"] {
   const candidates = reviews.filter(
     (review) =>
       review.commitId === attempt.headSha && isBotLogin(review.login, env.GITHUB_BOT_USERNAME)
   );
-  return attempt.reviewers.flatMap(({ key, model }) => {
-    const marker = reviewMarker(attempt.id, key);
+  return attempt.reviewers.map((reviewer) => {
+    if (reviewer.seen !== null) return reviewer;
+    const marker = reviewMarker(attempt.id, reviewer.key);
     const review = candidates.find((candidate) =>
       candidate.body.split("\n").some((line) => line.trim() === marker)
     );
-    return review ? [{ model, review }] : [];
+    if (!review) return reviewer;
+    return {
+      ...reviewer,
+      seen: { reviewId: review.id, approve: approves(review), url: review.url },
+    };
   });
 }
 
@@ -326,14 +329,20 @@ async function concludeAttempt(
     gate.client.userAgent
   );
   if (reviews === null) throw new Error(`Reviews unreadable for pull request #${pullNumber}`);
-  const posted = attemptReviews(env, attempt, reviews);
-  const expected = attempt.reviewers.length;
+  const reviewers = withSeenReviews(env, attempt, reviews);
+  // Keep what was seen even while other reviewers are awaited: a body edited later
+  // must not change a verdict already read.
+  if (reviewers.some((reviewer, index) => reviewer.seen !== attempt.reviewers[index].seen)) {
+    await writeAttempt(gate, { ...attempt, reviewers });
+  }
+  const posted = reviewers.flatMap(({ model, seen }) => (seen ? [{ model, seen }] : []));
+  const expected = reviewers.length;
 
   const conclude = async (state: CheckRunState): Promise<void> => {
     if (!(await updateCheckRun(gate.client, checkRunId, state))) {
       throw new Error(`AI Review check could not be written for ${commit}`);
     }
-    await writeAttempt(gate, { ...attempt, concludedAt: new Date().toISOString() });
+    await writeAttempt(gate, { ...attempt, reviewers, concludedAt: new Date().toISOString() });
   };
 
   if (posted.length < expected) {
@@ -357,10 +366,14 @@ async function concludeAttempt(
     return processed("check_timed_out");
   }
 
-  const verdicts = posted.map(({ model, review }) => ({
-    line: `- ${getModelDisplayName(model)}: ${reviewerVerdict(review)} ([review](${review.url}))`,
-    approve: reviewerVerdict(review) === "approve",
-  }));
+  // A verdict only ever gets worse after it is seen: its review is dismissed, or gone.
+  const verdicts = posted.map(({ model, seen }) => {
+    const live = reviews.find((review) => review.id === seen.reviewId);
+    const dismissed = live === undefined || live.state.toUpperCase() === "DISMISSED";
+    const approve = seen.approve && !dismissed;
+    const verdict = dismissed ? "dismissed" : approve ? "approve" : "changes requested";
+    return { line: `- ${getModelDisplayName(model)}: ${verdict} ([review](${seen.url}))`, approve };
+  });
   const summary = verdicts.map(({ line }) => line).join("\n");
   const approved = verdicts.every(({ approve }) => approve);
 
@@ -401,7 +414,9 @@ async function concludeAttempt(
     attemptId: attempt.id,
   };
   await writeVerdict(gate, pullNumber, verdict);
-  if (verdict.sha !== commit) {
+  // A verdict carried to a later head is taken back there too. It is never newly passed
+  // there: a pass on another commit needs that commit's own carry-forward tests.
+  if (verdict.sha !== commit && !approved) {
     await postCheck(gate, pullNumber, verdict.sha, carriedState(gate, verdict));
   }
   return processed(approved ? "check_approved" : "check_not_approved");

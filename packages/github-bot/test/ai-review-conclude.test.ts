@@ -34,6 +34,7 @@ import {
   ATTEMPT_KEY,
   BASE,
   botReview,
+  concludedAttempt,
   createEnv,
   createLogger,
   DIFF_HASH,
@@ -319,7 +320,7 @@ describe("an approval passes only its own pull request", () => {
 
 describe("reviews that change after the check concluded", () => {
   const dismissed: BotReviewPayload = { ...botReview, action: "dismissed" };
-  const concluded = () => attempt({ concludedAt: "2026-11-23T10:06:00.000Z" });
+  const concluded = () => concludedAttempt(true);
 
   it("takes the pass back when the bot's approving review is dismissed", async () => {
     vi.mocked(listPullRequestReviews).mockResolvedValue([review({ state: "DISMISSED" })]);
@@ -335,10 +336,63 @@ describe("reviews that change after the check concluded", () => {
     expect(json(VERDICT_KEY)).toMatchObject({ sha: HEAD, approved: false });
   });
 
+  it("never reads a verdict again, so an edited review body cannot turn into an approval", async () => {
+    // Seen as requesting changes; its body was edited afterwards to end with the marker.
+    vi.mocked(listPullRequestReviews).mockResolvedValue([
+      review({ state: "COMMENTED", body: `${marker(KEY_A)}\n${ADVISORY_APPROVE_MARKER}` }),
+    ]);
+    const { env, json, seed } = createEnv();
+    seed(ATTEMPT_KEY, concludedAttempt(false));
+    seed(
+      VERDICT_KEY,
+      verdict({
+        approved: false,
+        summary: "- Claude Haiku 4.5: changes requested ([review](https://github.test/review/1))",
+      })
+    );
+
+    expect(await evaluate(env)).toEqual({ outcome: "skipped", skip_reason: "verdict_unchanged" });
+    expect(updateCheckRun).not.toHaveBeenCalled();
+    expect(json(VERDICT_KEY)).toMatchObject({ approved: false });
+  });
+
+  it("fixes a reviewer's verdict when it is first seen, while others are still awaited", async () => {
+    const { env, json, seed } = createEnv();
+    seed(ATTEMPT_KEY, attempt({ reviewers: twoReviewerKeys }));
+    vi.mocked(listPullRequestReviews).mockResolvedValue([review({ state: "COMMENTED" })]);
+    expect(await evaluate(env)).toEqual({ outcome: "skipped", skip_reason: "awaiting_reviewers" });
+    expect(json(ATTEMPT_KEY).reviewers[0].seen).toEqual({
+      reviewId: 1,
+      approve: false,
+      url: "https://github.test/review/1",
+    });
+
+    // The first review is edited into an approval before the second reviewer posts.
+    vi.mocked(listPullRequestReviews).mockResolvedValue([
+      review({ body: `${marker(KEY_A)}\n${ADVISORY_APPROVE_MARKER}` }),
+      review({ id: 2, state: "APPROVED", body: marker(KEY_B) }),
+    ]);
+    await evaluate(env);
+
+    expect(lastState()).toMatchObject({ conclusion: "failure" });
+  });
+
+  it("counts a review that was deleted as dismissed", async () => {
+    vi.mocked(listPullRequestReviews).mockResolvedValue([]);
+    const { env, seed } = createEnv();
+    seed(ATTEMPT_KEY, concluded());
+    seed(VERDICT_KEY, verdict());
+
+    await evaluate(env, dismissed);
+
+    expect(lastState()).toMatchObject({ conclusion: "failure" });
+    expect(lastState()?.output.summary).toContain("dismissed");
+  });
+
   it("does not let a later review with the same marker replace a dismissed one", async () => {
     vi.mocked(listPullRequestReviews).mockResolvedValue([
       review({ state: "DISMISSED" }),
-      review({ state: "APPROVED", url: "https://github.test/review/again" }),
+      review({ id: 2, state: "APPROVED", url: "https://github.test/review/again" }),
     ]);
     const { env, seed } = createEnv();
     seed(ATTEMPT_KEY, concluded());
@@ -393,10 +447,22 @@ describe("reviews that change after the check concluded", () => {
     expect(createCheckRun).not.toHaveBeenCalled();
   });
 
+  it("does not pass a later head when a carried verdict is concluded again", async () => {
+    // Nothing stored says the carried head still qualifies, so it is never newly passed.
+    vi.mocked(listPullRequestReviews).mockResolvedValue([review({ state: "APPROVED" })]);
+    const { env, seed } = createEnv();
+    seed(ATTEMPT_KEY, concluded());
+    seed(VERDICT_KEY, verdict({ sha: "e".repeat(40), summary: "an older summary" }));
+
+    await evaluate(env);
+
+    expect(createCheckRun).not.toHaveBeenCalled();
+  });
+
   it("concludes from a review that posts after the attempt was closed as unfinished", async () => {
     vi.mocked(listPullRequestReviews).mockResolvedValue([review({ state: "APPROVED" })]);
     const { env, json, seed } = createEnv();
-    seed(ATTEMPT_KEY, concluded());
+    seed(ATTEMPT_KEY, attempt({ concludedAt: "2026-11-23T10:06:00.000Z" }));
 
     await evaluate(env);
 

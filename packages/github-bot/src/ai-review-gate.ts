@@ -96,7 +96,17 @@ const attemptSchema = z.object({
   baseRef: z.string(),
   startedAt: z.string(),
   /** Every configured reviewer. `key` is secret until that reviewer's session posts. */
-  reviewers: z.array(z.object({ key: z.string(), model: z.string() })),
+  reviewers: z.array(
+    z.object({
+      key: z.string(),
+      model: z.string(),
+      /**
+       * The reviewer's review and its verdict as first seen; null until it posts. A
+       * review body can be edited after posting, so the verdict is never read again.
+       */
+      seen: z.object({ reviewId: z.number(), approve: z.boolean(), url: z.string() }).nullable(),
+    })
+  ),
   /** Null until the check run exists; sessions are started first. */
   checkRunId: z.number().nullable(),
   /** Hash of the diff the reviewers were given; null when GitHub could not produce it. */

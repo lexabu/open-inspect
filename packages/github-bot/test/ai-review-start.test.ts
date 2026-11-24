@@ -71,7 +71,7 @@ describe("starting a review", () => {
       baseSha: BASE,
       baseRef: "main",
       startedAt: expect.any(String),
-      reviewers: [{ key: expect.any(String), model: "anthropic/claude-haiku-4-5" }],
+      reviewers: [{ key: expect.any(String), model: "anthropic/claude-haiku-4-5", seen: null }],
       checkRunId: 7,
       diffHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       concludedAt: null,

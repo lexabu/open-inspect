@@ -206,6 +206,7 @@ export async function postIssueComment(
 
 const pullRequestReviewsResponseSchema = z.array(
   z.object({
+    id: z.number(),
     user: z.object({ login: z.string() }).nullable(),
     commit_id: z.string().nullable(),
     state: z.string(),
@@ -217,6 +218,7 @@ const pullRequestReviewsResponseSchema = z.array(
 );
 
 export interface PullRequestReview {
+  id: number;
   login: string;
   commitId: string;
   state: string;
@@ -252,6 +254,7 @@ export async function listPullRequestReviews(
       for (const review of parsed.data) {
         if (review.user && review.commit_id && review.submitted_at) {
           reviews.push({
+            id: review.id,
             login: review.user.login,
             commitId: review.commit_id,
             state: review.state,

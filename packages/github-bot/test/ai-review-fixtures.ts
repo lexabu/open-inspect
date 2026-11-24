@@ -68,8 +68,8 @@ export const twoReviewers = [
   { model: SOL, harness: "opencode" as const },
 ];
 export const twoReviewerKeys = [
-  { key: KEY_A, model: HAIKU },
-  { key: KEY_B, model: SOL },
+  { key: KEY_A, model: HAIKU, seen: null },
+  { key: KEY_B, model: SOL, seen: null },
 ];
 
 export const repository = { id: 99, owner: { login: "acme" }, name: "widgets", private: false };
@@ -140,6 +140,7 @@ export function overrideComment(body: string, sender = bob): IssueCommentPayload
 
 export function review(overrides: Partial<PullRequestReview> = {}): PullRequestReview {
   return {
+    id: 1,
     login: BOT,
     commitId: HEAD,
     state: "COMMENTED",
@@ -238,12 +239,27 @@ export function attempt(overrides: object = {}) {
     baseSha: BASE,
     baseRef: "main",
     startedAt: LONG_AGO,
-    reviewers: [{ key: KEY_A, model: HAIKU }],
+    reviewers: [{ key: KEY_A, model: HAIKU, seen: null }],
     checkRunId: 7,
     diffHash: DIFF_HASH,
     concludedAt: null,
     ...overrides,
   };
+}
+
+/** `attempt()` after its reviewer's review `1` was seen with this verdict and the check concluded. */
+export function concludedAttempt(approve: boolean, overrides: object = {}) {
+  return attempt({
+    reviewers: [
+      {
+        key: KEY_A,
+        model: HAIKU,
+        seen: { reviewId: 1, approve, url: "https://github.test/review/1" },
+      },
+    ],
+    concludedAt: "2026-11-23T10:06:00.000Z",
+    ...overrides,
+  });
 }
 
 /** A verdict reached by `attempt()` on the head. */

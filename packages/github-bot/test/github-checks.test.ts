@@ -224,6 +224,7 @@ describe("listPullRequestReviews", () => {
     vi.mocked(globalThis.fetch).mockResolvedValue(
       Response.json([
         {
+          id: 11,
           user: { login: "test-bot[bot]" },
           commit_id: SHA,
           state: "COMMENTED",
@@ -232,6 +233,7 @@ describe("listPullRequestReviews", () => {
           submitted_at: "2026-11-23T10:05:00Z",
         },
         {
+          id: 12,
           user: { login: "carol" },
           commit_id: SHA,
           state: "PENDING",
@@ -243,6 +245,7 @@ describe("listPullRequestReviews", () => {
 
     expect(await listPullRequestReviews("tok", "https://api.test/pulls/42/reviews")).toEqual([
       {
+        id: 11,
         login: "test-bot[bot]",
         commitId: SHA,
         state: "COMMENTED",

@@ -195,7 +195,7 @@ function gatedEnv(mergeGate: "off" | "shadow" | "required" = "required") {
         baseSha: BASE,
         baseRef: "main",
         startedAt: "2020-01-01T00:00:00.000Z",
-        reviewers: [{ key: "key-a", model: "anthropic/claude-haiku-4-5" }],
+        reviewers: [{ key: "key-a", model: "anthropic/claude-haiku-4-5", seen: null }],
         checkRunId: 7,
         diffHash: null,
         concludedAt: null,
@@ -207,6 +207,7 @@ function gatedEnv(mergeGate: "off" | "shadow" | "required" = "required") {
 
 const botReviewed = (state: string) => [
   {
+    id: 1,
     login: "test-bot[bot]",
     commitId: HEAD,
     state,

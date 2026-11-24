@@ -106,7 +106,8 @@ request and commit and gives each reviewer session a one-time marker to put in i
 first review carrying each reviewer's marker counts, so a review the bot posts for a comment request
 (for example "approve this PR") never passes the check. A reviewer approves with an `APPROVED`
 review, or with a comment-only review whose last line is the approve marker. A review that requests
-changes never approves.
+changes never approves. Each verdict is read once, when the review is first seen: editing a review
+afterwards changes nothing, and dismissing or deleting it takes its approval away.
 
 A check run belongs to a commit, not to a pull request. When two open pull requests have the same
 head commit, the check asks for a review instead of passing, and a verdict is never carried forward
