@@ -152,10 +152,19 @@ export class ReviewGateStore {
     };
   }
 
-  /** Supersedes the pull request's active attempt, if any, and returns it. */
-  async supersedeActive(pull: PullKey, now: number): Promise<ReviewAttempt[]> {
-    await this.supersedeStatement(pull, now).run();
-    return this.supersededAt(pull, now);
+  /**
+   * Supersedes one attempt, if it is still active. Returns whether this call did: false
+   * means something else superseded or concluded it first.
+   */
+  async supersedeAttempt(attemptId: string, now: number): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE github_review_attempts SET status = 'superseded', finished_at = ?
+         WHERE id = ? AND ${ACTIVE}`
+      )
+      .bind(now, attemptId)
+      .run();
+    return result.meta.changes === 1;
   }
 
   private supersedeStatement(pull: PullKey, now: number) {
@@ -392,8 +401,9 @@ export class ReviewGateStore {
   }
 
   /**
-   * Stores a human override as the pull request's verdict and supersedes its running
-   * attempt, which is returned: a review still in flight can no longer change the outcome.
+   * Stores a human override as the pull request's verdict and supersedes the attempt on
+   * the overridden commit, which is returned: a review of that commit still in flight can
+   * no longer change the outcome. A review of another head is not the override's business.
    */
   async override(
     pull: PullKey,
@@ -401,7 +411,12 @@ export class ReviewGateStore {
     now: number
   ): Promise<ReviewAttempt[]> {
     await this.db.batch([
-      this.supersedeStatement(pull, now),
+      this.db
+        .prepare(
+          `UPDATE github_review_attempts SET status = 'superseded', finished_at = ?
+           WHERE repo_id = ? AND pr_number = ? AND head_sha = ? AND ${ACTIVE}`
+        )
+        .bind(now, pull.repoId, pull.prNumber, verdict.sha),
       this.db
         .prepare(
           `INSERT INTO github_review_verdicts

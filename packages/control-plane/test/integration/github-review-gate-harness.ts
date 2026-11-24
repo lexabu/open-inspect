@@ -50,6 +50,8 @@ export function fakeGitHub() {
     shared: null as string | null,
     /** Runs once, inside the gate's next read of the pull request: something else happens meanwhile. */
     duringNextRead: null as (() => Promise<unknown>) | null,
+    /** Runs once, inside the gate's next diff hash: something else happens meanwhile. */
+    duringNextHash: null as (() => Promise<unknown>) | null,
     /** Runs once, right after the next check run is created. */
     afterNextCreate: null as (() => Promise<unknown>) | null,
     createFails: false,
@@ -65,6 +67,9 @@ export function fakeGitHub() {
       return world.pull;
     },
     hashPullDiff: async (baseSha, headSha) => {
+      const meanwhile = world.duringNextHash;
+      world.duringNextHash = null;
+      await meanwhile?.();
       const key = `${baseSha}...${headSha}`;
       return world.diffs.has(key) ? (world.diffs.get(key) ?? null) : "hash-of-the-usual-diff";
     },

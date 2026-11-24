@@ -152,7 +152,6 @@ export class ReviewGate {
     await this.closeSuperseded(github, superseded);
     if (!claimed) return { outcome: "skipped", reason: "review_in_progress" };
 
-    const pullKey = { repoId: repository.id, prNumber: pull.number };
     let checkRunId: number | null = null;
     let started: { sessionId: string; messageId: string; model: string }[];
     try {
@@ -218,8 +217,10 @@ export class ReviewGate {
       // A review that did not fully start decides nothing; a session that did start
       // reports into a superseded attempt. Nothing replaces its check run, so the run
       // asks for a review: closed as neutral, it would pass a required check.
-      await store.supersedeActive(pullKey, this.deps.now());
-      if (checkRunId !== null) {
+      const superseded = await store.supersedeAttempt(attempt.id, this.deps.now());
+      // Only if this teardown is what ended the attempt: one that an override or a base
+      // change replaced first had its run closed by that, and keeps it.
+      if (superseded && checkRunId !== null) {
         const state = needsReview(mode, pull.headSha, "The AI review could not be started.");
         if (!(await github.updateCheck(checkRunId, state))) {
           log.error("github_review.check_close_failed", { attempt: attempt.id });
@@ -251,10 +252,11 @@ export class ReviewGate {
     if (!pull.open) return { outcome: "skipped", reason: "pr_not_open" };
     if (pull.draft) return { outcome: "skipped", reason: "draft_pr" };
     const pullKey = { repoId: repository.id, prNumber: pull.number };
-    const ask = async (why: string): Promise<GatePullChangeResponse> => {
-      await this.postCheck(github, pull, needsReview(mode, pull.headSha, why));
-      return { outcome: "needs_review" };
-    };
+    const state = (why: string) => needsReview(mode, pull.headSha, why);
+    const ask = async (why: string): Promise<GatePullChangeResponse> =>
+      (await this.postUnlessReviewing(github, pullKey, pull, state(why)))
+        ? { outcome: "needs_review" }
+        : { outcome: "skipped", reason: "review_in_progress" };
 
     switch (request.change) {
       case "review_not_started": {
@@ -269,13 +271,17 @@ export class ReviewGate {
         // The evidence was reached against another base branch, or before the pull
         // request was closed; none of it carries over. The new check is posted first:
         // a superseded run is only closed once something newer stands on the head.
-        const asked = await ask(
-          request.change === "base"
-            ? `The base branch changed to \`${pull.baseRef}\`.`
-            : "The pull request was reopened."
+        await this.postCheck(
+          github,
+          pull,
+          state(
+            request.change === "base"
+              ? `The base branch changed to \`${pull.baseRef}\`.`
+              : "The pull request was reopened."
+          )
         );
         await this.closeSuperseded(github, await store.invalidate(pullKey, this.deps.now()));
-        return asked;
+        return { outcome: "needs_review" };
       }
       case "head": {
         if (pull.headSha !== request.headSha) return { outcome: "skipped", reason: "stale_head" };
@@ -285,10 +291,12 @@ export class ReviewGate {
           return { outcome: "skipped", reason: "review_in_progress" };
         }
         const verdict = await store.getVerdict(pullKey);
-        const carried = verdict && (await this.carryForward(github, pullKey, pull, verdict, mode));
-        if (!carried) return ask("No AI review covers this diff.");
-        if (typeof carried === "string") return ask(carried);
-        return { outcome: "carried_forward" };
+        const carried = verdict
+          ? await this.carryForward(github, pullKey, pull, verdict, mode)
+          : "not_covered";
+        if (carried === "carried") return { outcome: "carried_forward" };
+        if (carried === "reviewing") return { outcome: "skipped", reason: "review_in_progress" };
+        return ask(carried === "not_covered" ? "No AI review covers this diff." : carried.blocked);
       }
     }
   }
@@ -299,9 +307,9 @@ export class ReviewGate {
   }
 
   /**
-   * Carries a verdict to a new head whose diff it still covers. Returns true when it did,
-   * false when the verdict does not cover the head, or the reason an approval that covers
-   * it must not pass here.
+   * Carries a verdict to a new head whose diff it still covers. `not_covered` when it does
+   * not cover the head, `blocked` with the reason an approval that covers it must not pass
+   * here, `reviewing` when a review of the head started meanwhile.
    */
   private async carryForward(
     github: GateGitHub,
@@ -309,20 +317,22 @@ export class ReviewGate {
     pull: LivePull,
     verdict: PullVerdict,
     mode: ActiveMode
-  ): Promise<boolean | string> {
+  ): Promise<"carried" | "not_covered" | "reviewing" | { blocked: string }> {
     // An override is a person's decision about one commit; it is never extended to another.
-    if (verdict.attemptId === null) return false;
-    if (verdict.diffHash === null || verdict.baseRef !== pull.baseRef) return false;
-    if ((await github.hashPullDiff(pull.baseSha, pull.headSha)) !== verdict.diffHash) return false;
+    if (verdict.attemptId === null) return "not_covered";
+    if (verdict.diffHash === null || verdict.baseRef !== pull.baseRef) return "not_covered";
+    if ((await github.hashPullDiff(pull.baseSha, pull.headSha)) !== verdict.diffHash) {
+      return "not_covered";
+    }
     if (verdict.approved) {
       const shared = await github.sharedHeadReason(pull);
-      if (shared !== null) return shared;
+      if (shared !== null) return { blocked: shared };
     }
     // The verdict may have changed since it was read; a stale one is not carried.
     if (!(await this.deps.store.carryVerdict(pullKey, verdict, pull.headSha, this.deps.now()))) {
-      return false;
+      return "not_covered";
     }
-    await this.postCheck(github, pull, {
+    const posted = await this.postUnlessReviewing(github, pullKey, pull, {
       status: "completed",
       conclusion: verdictConclusion(mode, verdict.approved),
       output: {
@@ -331,12 +341,13 @@ export class ReviewGate {
       },
       reviewAction: !verdict.approved,
     });
+    if (!posted) return "reviewing";
     this.deps.log.info("github_review.carried_forward", {
       pull_number: pull.number,
       head_sha: pull.headSha,
       reviewed_sha: verdict.reviewedSha,
     });
-    return true;
+    return "carried";
   }
 
   /** A human passes the head's check, on the record. The caller has checked their access. */
@@ -449,17 +460,8 @@ export class ReviewGate {
           );
         }
         if ((await store.listSessions(attempt.id)).length === 0) {
-          // Its start never recorded a session: nothing will ever report.
-          const pullKey = { repoId: attempt.repoId, prNumber: attempt.prNumber };
-          const repository = {
-            owner: attempt.repoOwner,
-            name: attempt.repoName,
-            id: attempt.repoId,
-          };
-          await this.closeSuperseded(
-            this.deps.github(repository),
-            await store.supersedeActive(pullKey, this.deps.now())
-          );
+          // Its start never recorded a session, nor a check run: nothing will ever report.
+          await store.supersedeAttempt(attempt.id, this.deps.now());
           continue;
         }
         await this.concludeIfComplete(attempt.id);
@@ -654,15 +656,39 @@ export class ReviewGate {
   }
 
   /** Posts a new check run on the head; it replaces any earlier AI Review run there. */
-  private async postCheck(github: GateGitHub, pull: LivePull, state: CheckRunState): Promise<void> {
+  private async postCheck(
+    github: GateGitHub,
+    pull: LivePull,
+    state: CheckRunState
+  ): Promise<number> {
     const run = {
       headSha: pull.headSha,
       externalId: reviewCheckExternalId(pull.number),
       startedAt: new Date(this.deps.now()).toISOString(),
     };
-    if ((await github.createCheck(run, state)) === null) {
+    const checkRunId = await github.createCheck(run, state);
+    if (checkRunId === null) {
       throw new Error(`AI Review check could not be written for ${pull.headSha}`);
     }
+    return checkRunId;
+  }
+
+  /**
+   * Posts a check for a head that no review was running on when the caller looked. A
+   * review may have started since; its run is then the older one and this the newer, so
+   * this one is withdrawn rather than left to stand in for the review's result. Returns
+   * false when it was withdrawn.
+   */
+  private async postUnlessReviewing(
+    github: GateGitHub,
+    pullKey: PullKey,
+    pull: LivePull,
+    state: CheckRunState
+  ): Promise<boolean> {
+    const checkRunId = await this.postCheck(github, pull, state);
+    if (!(await this.reviewing(pullKey, pull))) return true;
+    await this.closeSuperseded(github, [{ id: `posted-for-${pull.headSha}`, checkRunId }]);
+    return false;
   }
 
   /**

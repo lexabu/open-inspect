@@ -334,15 +334,15 @@ export function finalResponseText(
 ): string | null {
   const { eventRows, eventLimitReached } = collectFinalResponseEventRows(source, messageId);
   if (eventLimitReached) return null;
-  const lastTextAt = Math.max(
-    ...eventRows.filter((row) => row.type === "token").map((row) => row.created_at)
-  );
-  // No text at all gives -Infinity. A tie in time cannot be ordered, so it counts as after.
-  const toolActivityFollowed = eventRows.some(
-    (row) => TOOL_ACTIVITY.has(row.type) && row.created_at >= lastTextAt
-  );
-  if (!Number.isFinite(lastTextAt) || toolActivityFollowed) return null;
-  return buildAgentResponseFromEvents(eventRows.map(toEventResponse)).textContent;
+  // The rows come newest first, in the order the event repository keeps them, which
+  // also orders events that share a timestamp.
+  const newestText = eventRows.findIndex((row) => row.type === "token");
+  const toolActivityFollowed = eventRows
+    .slice(0, Math.max(newestText, 0))
+    .some((row) => TOOL_ACTIVITY.has(row.type));
+  if (newestText === -1 || toolActivityFollowed) return null;
+  // A token event carries the text so far, so the newest one is the whole of it.
+  return String(toEventResponse(eventRows[newestText]).data.content ?? "");
 }
 
 function buildFinalResponse(
