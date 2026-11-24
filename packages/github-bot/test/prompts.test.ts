@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { ADVISORY_APPROVE_MARKER } from "@open-inspect/shared/github-review-verdict";
 import { buildCodeReviewPrompt, buildCommentActionPrompt } from "../src/prompts";
 
 describe("buildCodeReviewPrompt", () => {
@@ -190,6 +191,7 @@ describe("buildCommentActionPrompt", () => {
       commentActionInstructions: "Request changes if the change is risky.",
     });
     expect(prompt).toContain("never submit an APPROVE or REQUEST_CHANGES");
+    expect(prompt.slice(prompt.indexOf("## Repository rule"))).toContain(ADVISORY_APPROVE_MARKER);
     expect(prompt.indexOf("## Repository rule")).toBeGreaterThan(
       prompt.indexOf("Request changes if the change is risky.")
     );

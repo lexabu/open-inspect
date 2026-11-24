@@ -11,7 +11,8 @@ function buildCommentOnlyRule(commentOnlyReviews: boolean): string {
   return `
 ## Repository rule
 This rule overrides any instruction above: never submit an APPROVE or REQUEST_CHANGES pull request
-review in this repository. Submit any review as COMMENT and state its verdict in the text.
+review in this repository. Submit any review as COMMENT and state its verdict in the text; when
+the verdict is approve, end the body with the line ${ADVISORY_APPROVE_MARKER}
 `;
 }
 
