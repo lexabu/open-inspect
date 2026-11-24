@@ -237,7 +237,7 @@ function postReceipt(call: ToolCallEvent, target: PullRequestTarget): SessionPos
 
 /** One memory call's outcome, validated against what the tool returns on success. */
 type MemoryOutcome =
-  "searched" | "matched" | "fact_used" | "updated" | "proposed" | "failed" | "no_fact";
+  "searched" | "matched" | "fact_recalled" | "updated" | "proposed" | "failed" | "no_fact";
 
 const BUILT_IN_MEMORY_TOOLS: ReadonlySet<string> = new Set(MEMORY_TOOL_NAMES);
 
@@ -264,7 +264,7 @@ function hindsightOutcomes(tool: string, output: string): MemoryOutcome[] {
   // A reflection answers in prose, not facts: it searched, but used none that can be counted.
   if (tool === "reflect") return ["searched"];
   if (!isRecord(response) || !Array.isArray(response.results)) return ["failed"];
-  return ["searched", ...response.results.map((): MemoryOutcome => "fact_used")];
+  return ["searched", ...response.results.map((): MemoryOutcome => "fact_recalled")];
 }
 
 function builtInOutcomes(tool: string, output: string): MemoryOutcome[] {
@@ -282,7 +282,7 @@ function builtInOutcome(tool: string, response: unknown): MemoryOutcome {
     const read = sandboxMemoryReadResultSchema.safeParse(response);
     if (!read.success) return "failed";
     // An archived fact comes back as a notice without its body: nothing to use.
-    return read.data.status === "active" ? "fact_used" : "no_fact";
+    return read.data.status === "active" ? "fact_recalled" : "no_fact";
   }
   const write = sandboxMemoryWriteResultSchema.safeParse(response);
   if (!write.success) return "failed";
@@ -290,13 +290,13 @@ function builtInOutcome(tool: string, response: unknown): MemoryOutcome {
 }
 
 function emptySource(): MemorySourceActivity {
-  return { searched: false, factsUsed: 0, matched: 0, updated: 0, proposed: 0, failed: 0 };
+  return { searched: false, factsRecalled: 0, matched: 0, updated: 0, proposed: 0, failed: 0 };
 }
 
 function record(activity: MemorySourceActivity, outcome: MemoryOutcome): void {
   if (outcome === "searched") activity.searched = true;
   else if (outcome === "matched") activity.matched += 1;
-  else if (outcome === "fact_used") activity.factsUsed += 1;
+  else if (outcome === "fact_recalled") activity.factsRecalled += 1;
   else if (outcome === "updated") activity.updated += 1;
   else if (outcome === "proposed") activity.proposed += 1;
   else if (outcome === "failed") activity.failed += 1;

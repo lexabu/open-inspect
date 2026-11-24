@@ -61,7 +61,7 @@ describe("applyFooter and the footer marker", () => {
   it("takes only a complete generated footer line for a footer, never prose", () => {
     const body = `Findings\n${REVIEW_FOOTER_MARKER}\nReply via email if this is unclear.`;
     expect(applyFooter(body, line)).toBe(`${body}\n\n${REVIEW_FOOTER_MARKER}\n${line}`);
-    const withMemory = `Ok\n\n${REVIEW_FOOTER_MARKER}\nReply via Claude Opus 5.5 · Hindsight memory: searched, 2 facts used · built-in memory: not used · Cost: <$0.01`;
+    const withMemory = `Ok\n\n${REVIEW_FOOTER_MARKER}\nReply via Claude Opus 5.5 · Hindsight memory: searched, 2 facts recalled · built-in memory: not used · Cost: <$0.01`;
     expect(applyFooter(withMemory, line)).toBe(`Ok\n\n${REVIEW_FOOTER_MARKER}\n${line}`);
   });
 });
