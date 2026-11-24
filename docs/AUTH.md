@@ -274,7 +274,10 @@ All rows also require session read permission.
   [AI Review check](integrations/GITHUB.md#ai-review-check) are private, have no owner or team, and
   are not listed. Nobody can prompt them, use their sandbox, add collaborators, change their
   visibility, stop or delete them, in any enforcement mode; a workspace Owner's read is the only
-  access, and it is audited like a break-glass read.
+  access, and it is audited like a break-glass read. The session's own sandbox works as any
+  session's does: with its own token it loads, searches and proposes memory for the session's
+  repositories, and reaches its skills, credentials and MCP servers. It has no personal memory, and
+  it cannot spawn child sessions.
 - **Session owners and participants differ.** A session's owner is its creator, not its team, and
   can read it even when private (with session read permission). Runtime participants and the
   **Mine** filter are attribution and discovery only; they do not grant or limit access.

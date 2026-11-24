@@ -42,11 +42,15 @@ function sessionMayWrite(partition: MemoryPartition): SqlFragment {
  * Repository/team grants are deliberately not re-encoded here. They are checked immediately
  * before the write and rechecked on every read, and agent writes to shared scopes are proposals
  * that a human approves; duplicating grant rules in SQL would let the two copies drift.
+ *
+ * A platform-held session has no owner to be suspended: it writes as itself, with no user.
  */
 export function agentWriteGuard(actor: AgentActor, partition: MemoryPartition): SqlFragment {
   return sql`EXISTS (SELECT 1 FROM sessions s
-    JOIN users u ON u.id = s.user_id AND u.suspended_at IS NULL
-    WHERE s.id = ${actor.sessionId} AND s.user_id = ${actor.userId}
+    LEFT JOIN users u ON u.id = s.user_id
+    WHERE s.id = ${actor.sessionId}
+      AND ((s.user_id = ${actor.userId} AND u.suspended_at IS NULL)
+        OR (s.platform_held = 1 AND s.user_id IS NULL AND ${actor.userId} IS NULL))
       AND s.status IN ('created', 'active') AND ${sessionMayWrite(partition)})`;
 }
 

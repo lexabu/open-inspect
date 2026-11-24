@@ -78,7 +78,7 @@ describe("reviewer sessions of the AI Review gate", () => {
     expect(input.scmUserId).toBeUndefined();
     expect(memorySelect).toHaveBeenCalledWith(
       expect.objectContaining({
-        principal: { userId: null, ownerTeamId: null },
+        principal: { userId: null, ownerTeamId: null, platformHeld: true },
         includePersonalMemories: false,
       })
     );

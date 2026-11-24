@@ -65,10 +65,15 @@ export interface MemorySources {
   environmentId: string | null;
 }
 
-/** Who a session acts for: its owning team, or (for workspace sessions) its owner. */
+/**
+ * Who a session acts for: its owning team, or (for workspace sessions) its owner. A
+ * platform-held session has neither and acts for the platform, which started it on its
+ * repositories itself.
+ */
 export interface SessionPrincipal {
   userId: string | null;
   ownerTeamId: string | null;
+  platformHeld?: true;
 }
 
 /**
