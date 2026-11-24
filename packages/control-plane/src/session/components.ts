@@ -1,4 +1,5 @@
 import { createReviewGate } from "../github-review/factory";
+import { createReviewFooter } from "../review-footer/factory";
 import { finalResponseText } from "./http/handlers/child-session-summary";
 import { sessionAccessRow } from "../authorization/session-access-row";
 import { SessionMcpContext } from "./mcp-context";
@@ -642,6 +643,15 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     messenger,
     updateLastActivity
   );
+  const reviewFooter = createReviewFooter({
+    env,
+    db,
+    encryptionKey: repoSecretsEncryptionKey,
+    log,
+    sessions: sessionCoreRepository,
+    messages: messageRepository,
+    events: eventRepository,
+  });
   const executionEventHandler = new SandboxExecutionEventHandler(
     backgroundTasks,
     log,
@@ -660,7 +670,8 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     (title) => {
       titleService.applySessionTitleUpdate(title, { onlyIfUnset: true });
     },
-    () => mcpContext.disableRuntime()
+    () => mcpContext.disableRuntime(),
+    (messageId) => reviewFooter.apply(messageId)
   );
   const runtimeEventHandler = new SandboxRuntimeEventHandler(
     sessionCoreRepository,

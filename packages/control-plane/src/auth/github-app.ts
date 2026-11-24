@@ -378,15 +378,12 @@ const REVIEW_GATE_PERMISSIONS = {
   metadata: "read",
 } as const;
 
-/**
- * A token for the AI Review merge gate on one repository. It is the only token this
- * control plane mints that can write check runs; it is used by the gate itself, never
- * cached with session tokens and never handed to a sandbox.
- */
-export async function mintReviewGateToken(
+/** A token for one repository with exactly `permissions`, minted for in-process use only. */
+async function mintRepositoryToken(
   config: GitHubAppConfig,
   userAgent: string,
-  repositoryId: number
+  repositoryId: number,
+  permissions: Record<string, string>
 ): Promise<string> {
   const jwt = await generateAppJwt(config.appId, config.privateKey);
   const minted = await mintInstallationToken(
@@ -394,9 +391,37 @@ export async function mintReviewGateToken(
     config.installationId,
     userAgent,
     repositoryCredentialScope([repositoryId]),
-    { ...REVIEW_GATE_PERMISSIONS }
+    permissions
   );
   return minted.token;
+}
+
+/**
+ * A token for the AI Review merge gate on one repository. It is the only token this
+ * control plane mints that can write check runs; it is used by the gate itself, never
+ * cached with session tokens and never handed to a sandbox.
+ */
+export function mintReviewGateToken(
+  config: GitHubAppConfig,
+  userAgent: string,
+  repositoryId: number
+): Promise<string> {
+  return mintRepositoryToken(config, userAgent, repositoryId, { ...REVIEW_GATE_PERMISSIONS });
+}
+
+/** What the review footer needs: to read and edit the App's own reviews and comments. */
+const REVIEW_FOOTER_PERMISSIONS = { pull_requests: "write", metadata: "read" } as const;
+
+/**
+ * A token that edits the App's posts on one repository's pull requests to add the review
+ * footer. Like the gate's token it stays in the control plane and is never cached.
+ */
+export function mintReviewFooterToken(
+  config: GitHubAppConfig,
+  userAgent: string,
+  repositoryId: number
+): Promise<string> {
+  return mintRepositoryToken(config, userAgent, repositoryId, { ...REVIEW_FOOTER_PERMISSIONS });
 }
 
 export async function getInstallationTokenCacheKey(

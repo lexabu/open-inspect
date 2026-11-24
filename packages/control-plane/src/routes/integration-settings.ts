@@ -411,6 +411,7 @@ async function handleGetResolvedConfig(
         codeReviewInstructions: githubSettings.codeReviewInstructions ?? null,
         commentOnlyReviews: githubSettings.commentOnlyReviews ?? false,
         reviewTip: githubSettings.reviewTip ?? false,
+        reviewFooter: githubSettings.reviewFooter ?? false,
         mergeGate: githubSettings.mergeGate ?? "off",
         commentActionInstructions: githubSettings.commentActionInstructions ?? null,
       },

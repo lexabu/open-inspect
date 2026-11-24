@@ -302,6 +302,43 @@ Commands: `npai` (full review) · `npai security|performance|bugs|tests` · `npa
 The last part appears only where the merge gate is on. With no short command set, the line names
 `@my-app` instead.
 
+### Review footer
+
+With the `reviewFooter` setting on (`false` by default, set through the integration settings API,
+globally or per repository), each review and PR conversation comment a GitHub-triggered session
+posts ends with one line of platform data, added after the session's turn completes:
+
+```text
+Findings via GPT-6.2 Sol · Hindsight memory: searched, 2 facts used · Bedrock cost: $0.05
+```
+
+- **Model**: the catalog name of the model that ran the turn. Replies read `Reply via ...`.
+- **Memory**: counted per source from the turn's own tool calls, each result checked before it
+  counts. `Hindsight memory` covers `recall` (searched; each returned fact is used, none reads
+  `searched, nothing relevant`), `reflect` (searched) and `retain` (updated); a response with an
+  `error` field, or a recall without `results`, is a failure. It shows whenever a Hindsight server
+  (one whose name or URL contains `hindsight`) applies to the repository: `not used` when the turn
+  never called it, `unavailable` when every call failed. `built-in memory` covers `memory_search`,
+  `memory_read` (a fact is used only when the read returns an active fact's body) and `memory_write`
+  (updated, or proposed when the write awaits approval), and shows only when the turn called one of
+  them. With neither, the part is left out.
+- **Cost**: the session's total cost to the cent (`<$0.01` below half a cent), labelled
+  `Bedrock cost` for Amazon Bedrock models.
+
+The control plane takes a post as the turn's own only from a creation receipt in that turn, on the
+pull request the session's prompt names: a single `gh api` POST to `repos/{o}/{r}/pulls/{n}/reviews`
+or `repos/{o}/{r}/issues/{n}/comments` whose whole output is the created object, or a single
+`gh pr comment` that creates a comment and prints only its URL. Chained or piped commands, command
+substitutions, GraphQL calls, `--edit-last`, `PATCH`/`PUT` and posts on any other pull request never
+count. The turn's tool calls are read a few at a time within a size budget, keeping only these
+facts; a turn beyond the budget is not footered. The control plane then checks the post is the App's
+own and edits it with a token that can only write pull requests on that repository (`PUT` for a
+review, `PATCH` for a comment). The footer sits under a hidden `<!-- open-inspect:footer -->`
+marker: a re-run replaces that block when it ends the body (just above a trailing advisory-approval
+marker), and a marker anywhere else is left as body text. Inline review comments are left as they
+are. When no post is found or GitHub refuses the edit, nothing changes and the control plane logs
+`review_footer` with the reason.
+
 ---
 
 ## `@Mention` Actions
