@@ -97,13 +97,17 @@ function verdictConclusion(mode: ActiveMode, approved: boolean) {
   return mode === "required" ? ("failure" as const) : ("neutral" as const);
 }
 
-/** The check of a run that something newer replaced: closed, and deciding nothing. */
+/**
+ * The check of a run that something else replaced. It concludes `cancelled`, not
+ * `neutral`: GitHub lets a neutral run pass a required check, and whatever the order in
+ * which runs were created, a replaced run must never be what lets a head merge.
+ */
 const SUPERSEDED: CheckRunState = {
   status: "completed",
-  conclusion: "neutral",
+  conclusion: "cancelled",
   output: {
     title: "Superseded",
-    summary: "A newer AI Review check on this pull request replaced this run.",
+    summary: "Another AI Review check on this pull request replaced this run.",
   },
   reviewAction: false,
 };

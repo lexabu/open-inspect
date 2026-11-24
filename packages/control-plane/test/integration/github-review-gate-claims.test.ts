@@ -275,4 +275,37 @@ describe("the newest check run on a head never passes by being neutral", () => {
     // Closed as Superseded with nothing newer to replace it, it would pass a required check.
     expect(h.latest(1)).not.toMatchObject({ conclusion: "neutral" });
   });
+
+  it("does not pass when a review starts between a base change's check and its bookkeeping", async () => {
+    const h = harness();
+    h.world.pull!.baseRef = "release";
+    // A new review of the retargeted pull request starts right after the "base changed"
+    // check is posted and before the base change supersedes what was running.
+    h.world.afterNextCreate = () => h.start();
+
+    await h.change("base");
+
+    // That review's run is the newest on the head. Whatever closed it, it must not pass.
+    const newest = h.world.checks.at(-1)?.states.at(-1);
+    expect(newest).toMatchObject({ status: "completed" });
+    expect(["success", "neutral"]).not.toContain(
+      newest?.status === "completed" ? newest.conclusion : null
+    );
+  });
+
+  it("closes every superseded run as cancelled, which no required check accepts", async () => {
+    const h = harness();
+    await started(h);
+    await h.override();
+
+    expect(h.latest(1)).toEqual({
+      status: "completed",
+      conclusion: "cancelled",
+      output: {
+        title: "Superseded",
+        summary: "Another AI Review check on this pull request replaced this run.",
+      },
+      reviewAction: false,
+    });
+  });
 });

@@ -50,6 +50,8 @@ export function fakeGitHub() {
     shared: null as string | null,
     /** Runs once, inside the gate's next read of the pull request: something else happens meanwhile. */
     duringNextRead: null as (() => Promise<unknown>) | null,
+    /** Runs once, right after the next check run is created. */
+    afterNextCreate: null as (() => Promise<unknown>) | null,
     createFails: false,
     updateFails: false,
     /** Every check run, with the states written to it, newest state last. */
@@ -71,6 +73,9 @@ export function fakeGitHub() {
       if (world.createFails) return null;
       const id = world.checks.length + 1;
       world.checks.push({ id, headSha: run.headSha, externalId: run.externalId, states: [state] });
+      const then = world.afterNextCreate;
+      world.afterNextCreate = null;
+      await then?.();
       return id;
     },
     updateCheck: async (id, state) => {

@@ -104,7 +104,7 @@ describe("starting a review", () => {
     expect(await h.attemptStatus(second)).toBe("running");
     expect(h.latest(1)).toMatchObject({
       status: "completed",
-      conclusion: "neutral",
+      conclusion: "cancelled",
       output: { title: "Superseded" },
       reviewAction: false,
     });
@@ -575,7 +575,7 @@ describe("a pull request that changed", () => {
 
     expect(await h.store.getVerdict(pullKey)).toBeNull();
     expect(await h.attemptStatus(running)).toBe("superseded");
-    expect(h.latest(2)).toMatchObject({ conclusion: "neutral", output: { title: "Superseded" } });
+    expect(h.latest(2)).toMatchObject({ conclusion: "cancelled", output: { title: "Superseded" } });
     const posted = h.world.checks.at(-1);
     expect(posted).toMatchObject({ headSha: NEW_HEAD, externalId: "open-inspect:pr=42" });
     expect(posted?.states[0].output.summary).toContain(text);

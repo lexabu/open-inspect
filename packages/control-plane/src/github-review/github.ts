@@ -21,7 +21,7 @@ export type CheckRunState =
   | { status: "in_progress"; output: CheckOutput }
   | {
       status: "completed";
-      conclusion: "success" | "failure" | "neutral" | "action_required";
+      conclusion: "success" | "failure" | "neutral" | "action_required" | "cancelled";
       output: CheckOutput;
       /** Offer the "Review now" button. */
       reviewAction: boolean;

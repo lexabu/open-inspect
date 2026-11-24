@@ -108,7 +108,8 @@ The GitHub bot decides who may ask for a review. Everything after that happens i
   head commit of one pull request. Starting one is a single database write that refuses a second
   attempt on the same head, so repeated clicks and repeated deliveries start one review. A review of
   a newer head, an override, or a base change replaces a running attempt, whose check run is closed
-  as "Superseded".
+  as "Superseded". A superseded run concludes `cancelled`, which never passes a required check, so a
+  replaced run can never be what lets a head merge.
 - **Reviewer sessions nobody can steer.** Each session is held by the platform: it is private, has
   no owner and no team, and is not listed. Nobody, the pull request's author included, can read its
   prompt or events, send it a message, use its sandbox, add collaborators or change its visibility.
