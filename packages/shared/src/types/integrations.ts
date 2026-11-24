@@ -89,6 +89,12 @@ export const githubBotSettingsSchema = z.strictObject({
    * sessions keep that selection.
    */
   reviewers: z.array(githubReviewerSchema).min(1).max(MAX_GITHUB_REVIEWERS).optional(),
+  /**
+   * Reviews and comment actions never APPROVE or REQUEST_CHANGES: the bot posts
+   * COMMENT reviews with its verdict in the text (for example during a shadow pilot,
+   * or wherever branch protection should never see the bot's verdict).
+   */
+  commentOnlyReviews: z.boolean().optional(),
   allowedTriggerUsers: z.array(z.string()).optional(),
   codeReviewInstructions: z.string().optional(),
   commentActionInstructions: z.string().optional(),

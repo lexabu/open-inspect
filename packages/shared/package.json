@@ -70,6 +70,10 @@
       "import": "./dist/github-mention.js",
       "types": "./dist/github-mention.d.ts"
     },
+    "./github-review-verdict": {
+      "import": "./dist/github-review-verdict.js",
+      "types": "./dist/github-review-verdict.d.ts"
+    },
     "./regex": {
       "import": "./dist/regex.js",
       "types": "./dist/regex.d.ts"

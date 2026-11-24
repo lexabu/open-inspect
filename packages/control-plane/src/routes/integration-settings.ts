@@ -409,6 +409,7 @@ async function handleGetResolvedConfig(
         enabledRepos,
         allowedTriggerUsers: githubSettings.allowedTriggerUsers ?? null,
         codeReviewInstructions: githubSettings.codeReviewInstructions ?? null,
+        commentOnlyReviews: githubSettings.commentOnlyReviews ?? false,
         commentActionInstructions: githubSettings.commentActionInstructions ?? null,
       },
     });

@@ -58,6 +58,7 @@ describe("getGitHubConfig", () => {
       harness: "opencode",
       reasoningEffort: "high",
       reviewers: null,
+      commentOnlyReviews: false,
       autoReviewOnOpen: true,
       enabledRepos: null,
       allowedTriggerUsers: null,
@@ -65,6 +66,36 @@ describe("getGitHubConfig", () => {
       commentActionInstructions: null,
     });
     expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
+    [undefined, false],
+  ])("reads commentOnlyReviews %s from the control plane as %s", async (sent, expected) => {
+    const env = createMockEnv(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            config: {
+              model: null,
+              reasoningEffort: null,
+              ...(sent === undefined ? {} : { commentOnlyReviews: sent }),
+              autoReviewOnOpen: true,
+              enabledRepos: null,
+              allowedTriggerUsers: null,
+              codeReviewInstructions: null,
+              commentActionInstructions: null,
+            },
+          }),
+          { status: 200 }
+        )
+      )
+    );
+
+    const result = await getGitHubConfig(env, "acme/widgets", createMockLogger());
+
+    expect(result.commentOnlyReviews).toBe(expected);
   });
 
   it("parses a reviewer list from a successful response", async () => {
@@ -201,6 +232,7 @@ describe("getGitHubConfig", () => {
       harness: "opencode",
       reasoningEffort: null,
       reviewers: null,
+      commentOnlyReviews: false,
       autoReviewOnOpen: false,
       enabledRepos: ["acme/widgets"],
       allowedTriggerUsers: ["octocat"],
@@ -222,6 +254,7 @@ describe("getGitHubConfig", () => {
       harness: "opencode",
       reasoningEffort: null,
       reviewers: null,
+      commentOnlyReviews: true,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -245,6 +278,7 @@ describe("getGitHubConfig", () => {
       harness: "opencode",
       reasoningEffort: null,
       reviewers: null,
+      commentOnlyReviews: true,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -268,6 +302,7 @@ describe("getGitHubConfig", () => {
       harness: "opencode",
       reasoningEffort: null,
       reviewers: null,
+      commentOnlyReviews: true,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -296,6 +331,7 @@ describe("getGitHubConfig", () => {
       harness: "opencode",
       reasoningEffort: null,
       reviewers: null,
+      commentOnlyReviews: true,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -322,6 +358,7 @@ describe("getGitHubConfig", () => {
       harness: "opencode",
       reasoningEffort: null,
       reviewers: null,
+      commentOnlyReviews: true,
       autoReviewOnOpen: false,
       enabledRepos: [],
       allowedTriggerUsers: [],
@@ -343,6 +380,7 @@ describe("getGitHubConfig", () => {
       harness: "opencode",
       reasoningEffort: null,
       reviewers: null,
+      commentOnlyReviews: false,
       autoReviewOnOpen: true,
       enabledRepos: null,
       allowedTriggerUsers: null,

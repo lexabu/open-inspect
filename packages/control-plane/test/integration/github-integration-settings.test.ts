@@ -19,6 +19,23 @@ describe("GitHub integration settings harness", () => {
     return (await res.json<{ config: { harness: string } }>()).config.harness;
   }
 
+  async function resolvedCommentOnly(): Promise<boolean> {
+    const res = await serviceFetch(resolvedEndpoint, { service: "github-bot" });
+    expect(res.status).toBe(200);
+    return (await res.json<{ config: { commentOnlyReviews: boolean } }>()).config
+      .commentOnlyReviews;
+  }
+
+  it("resolves commentOnlyReviews: off by default, inherited, and overridable per repository", async () => {
+    expect(await resolvedCommentOnly()).toBe(false);
+    expect((await put(globalEndpoint, { defaults: { commentOnlyReviews: true } })).status).toBe(
+      200
+    );
+    expect(await resolvedCommentOnly()).toBe(true);
+    expect((await put(repoEndpoint, { commentOnlyReviews: false })).status).toBe(200);
+    expect(await resolvedCommentOnly()).toBe(false);
+  });
+
   it("resolves to the built-in harness when unconfigured", async () => {
     expect(await resolvedHarness()).toBe("opencode");
   });

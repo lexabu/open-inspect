@@ -506,6 +506,13 @@ export class IntegrationSettingsStore {
     });
 
     if (
+      settings.commentOnlyReviews !== undefined &&
+      typeof settings.commentOnlyReviews !== "boolean"
+    ) {
+      throw new IntegrationSettingsValidationError("commentOnlyReviews must be a boolean");
+    }
+
+    if (
       settings.codeReviewInstructions !== undefined &&
       typeof settings.codeReviewInstructions !== "string"
     ) {

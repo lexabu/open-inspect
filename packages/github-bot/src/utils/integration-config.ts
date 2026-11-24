@@ -19,6 +19,8 @@ export interface ResolvedGitHubConfig {
   reasoningEffort: string | null;
   /** Independent reviewers for review requests; null reviews with the single selection. */
   reviewers: GitHubReviewer[] | null;
+  /** Reviews and comment actions post COMMENT only, never APPROVE or REQUEST_CHANGES. */
+  commentOnlyReviews: boolean;
   autoReviewOnOpen: boolean;
   enabledRepos: string[] | null;
   allowedTriggerUsers: string[] | null;
@@ -40,6 +42,8 @@ const resolvedGitHubConfigResponseSchema = z.object({
         .max(MAX_GITHUB_REVIEWERS)
         .nullable()
         .default(null),
+      // Control planes that predate comment-only reviews omit it.
+      commentOnlyReviews: z.boolean().default(false),
       autoReviewOnOpen: z.boolean(),
       enabledRepos: z.array(z.string()).nullable(),
       allowedTriggerUsers: z.array(z.string()).nullable(),
@@ -53,6 +57,7 @@ const FAIL_CLOSED: Omit<ResolvedGitHubConfig, "model"> = {
   harness: DEFAULT_HARNESS,
   reasoningEffort: null,
   reviewers: null,
+  commentOnlyReviews: true,
   autoReviewOnOpen: false,
   enabledRepos: [],
   allowedTriggerUsers: [],
@@ -121,6 +126,7 @@ export async function getGitHubConfig(
       harness: DEFAULT_HARNESS,
       reasoningEffort: null,
       reviewers: null,
+      commentOnlyReviews: false,
       autoReviewOnOpen: true,
       enabledRepos: null,
       allowedTriggerUsers: null,
@@ -134,6 +140,7 @@ export async function getGitHubConfig(
     harness: data.config.harness,
     reasoningEffort: data.config.reasoningEffort,
     reviewers: data.config.reviewers,
+    commentOnlyReviews: data.config.commentOnlyReviews,
     autoReviewOnOpen: data.config.autoReviewOnOpen,
     enabledRepos: data.config.enabledRepos,
     allowedTriggerUsers: data.config.allowedTriggerUsers,
