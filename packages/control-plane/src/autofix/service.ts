@@ -452,10 +452,13 @@ export class AutofixService {
   /**
    * A review without its inline comments that call the bot: the bot handles each of those
    * as a command, so Autofix must not act on them too. The review's other feedback stays.
+   * The app's own reviews keep every comment: the bot never takes its own as a command.
    */
   private withoutBotCalls(feedback: GitHubPullRequestFeedback): GitHubPullRequestFeedback {
-    if (feedback.kind !== "review") return feedback;
     const { username, command } = this.bot;
+    if (feedback.kind !== "review" || isBotLogin(feedback.author.login, username)) {
+      return feedback;
+    }
     return {
       ...feedback,
       comments: feedback.comments.filter(

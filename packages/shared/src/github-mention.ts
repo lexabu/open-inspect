@@ -318,18 +318,22 @@ function isUnderline(line: string): boolean {
  */
 function fallbackLayout(body: string): BodyLayout {
   const ranges = fencedRanges(body);
+  // Lines end at LF, CRLF or a lone CR, so no line read here keeps a trailing CR.
   let start = 0;
-  while (start < body.length) {
-    const end = body.indexOf("\n", start);
-    const lineEnd = end < 0 ? body.length : end;
-    if (body.slice(start, lineEnd).trim() !== "") break;
-    start = lineEnd + 1;
+  let end = nextLineBreak(body, start);
+  while (start < body.length && body.slice(start, end).trim() === "") {
+    start = afterLineBreak(body, end);
+    end = nextLineBreak(body, start);
   }
   if (start >= body.length) return { ranges, commandLines: [] };
-  const firstEnd = body.indexOf("\n", start);
-  const nextEnd = firstEnd < 0 ? -1 : body.indexOf("\n", firstEnd + 1);
-  const next = firstEnd < 0 ? "" : body.slice(firstEnd + 1, nextEnd < 0 ? body.length : nextEnd);
+  const nextStart = afterLineBreak(body, end);
+  const next = body.slice(nextStart, nextLineBreak(body, nextStart));
   return { ranges, commandLines: isUnderline(next) ? [] : [start] };
+}
+
+/** The start of the line after the break at `end`: past a CRLF pair, or one LF or CR. */
+function afterLineBreak(body: string, end: number): number {
+  return end + (body.startsWith("\r\n", end) ? 2 : 1);
 }
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/s;

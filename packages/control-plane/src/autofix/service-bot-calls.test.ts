@@ -40,6 +40,28 @@ describe("AutofixService and inline comments that call the bot", () => {
     expect(queuedCommentBodies(h)).toEqual(["Rename this to `limit`."]);
   });
 
+  it("keeps the app's own review findings, even ones that name its triggers", async () => {
+    const h = buildService();
+    h.github.getPullRequestFeedback.mockResolvedValueOnce(
+      openInspectReview({
+        state: "COMMENTED",
+        body: "",
+        comments: [
+          inlineComment({ id: "1", body: "Ask @open-inspect to re-run once this is fixed." }),
+          inlineComment({ id: "2", body: "oi security\nThis query concatenates user input." }),
+        ],
+      })
+    );
+
+    const result = await h.service.process(OPEN_INSPECT_REVIEW_ENVELOPE);
+
+    expect(result).toMatchObject({ decision: "queued" });
+    expect(queuedCommentBodies(h)).toEqual([
+      "Ask @open-inspect to re-run once this is fixed.",
+      "oi security\nThis query concatenates user input.",
+    ]);
+  });
+
   it("skips a review whose only feedback calls the bot", async () => {
     const h = buildService();
     h.github.getPullRequestFeedback.mockResolvedValueOnce({
