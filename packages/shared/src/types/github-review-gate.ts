@@ -12,15 +12,14 @@ export const AI_REVIEW_CHECK_NAME = "AI Review";
 /** Identifier of the check's "Review now" button; GitHub echoes it in `check_run.requested_action`. */
 export const REVIEW_ACTION_IDENTIFIER = "review";
 
-/** A check run's `external_id`: its pull request and, for a review, the attempt. */
-export function reviewCheckExternalId(pullNumber: number, attemptId?: string): string {
-  const pull = `open-inspect:pr=${pullNumber}`;
-  return attemptId ? `${pull};attempt=${attemptId}` : pull;
+/** A check run's `external_id`, which names its pull request. */
+export function reviewCheckExternalId(pullNumber: number): string {
+  return `open-inspect:pr=${pullNumber}`;
 }
 
 /** The pull request a check run names in its `external_id`, or null when it names none. */
 export function pullNumberFromReviewCheck(externalId: string | null | undefined): number | null {
-  const match = /^open-inspect:pr=(\d+)(?:;attempt=[\w-]+)?$/.exec(externalId ?? "");
+  const match = /^open-inspect:pr=(\d+)$/.exec(externalId ?? "");
   return match ? Number(match[1]) : null;
 }
 
@@ -72,7 +71,6 @@ export const startGateReviewResponseSchema = z.discriminatedUnion("outcome", [
       "draft_pr",
       "stale_head",
       "stale_base",
-      "superseded",
     ]),
   }),
 ]);
@@ -106,7 +104,8 @@ export const gatePullChangeResponseSchema = z.discriminatedUnion("outcome", [
       "pr_not_open",
       "draft_pr",
       "stale_head",
-      "review_in_progress",
+      /** The head already rests on a review of it or on an override. */
+      "already_covered",
     ]),
   }),
 ]);

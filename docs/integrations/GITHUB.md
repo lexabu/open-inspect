@@ -107,9 +107,8 @@ The GitHub bot decides who may ask for a review. Everything after that happens i
 - **One attempt per head.** A review is an attempt: one session per configured reviewer, for one
   head commit of one pull request. Starting one is a single database write that refuses a second
   attempt on the same head, so repeated clicks and repeated deliveries start one review. A review of
-  a newer head, an override, or a base change replaces a running attempt, whose check run is closed
-  as "Superseded". A superseded run concludes `cancelled`, which never passes a required check, so a
-  replaced run can never be what lets a head merge.
+  a newer head, an override of the same commit, a base change or a reopening replaces a running
+  attempt, which can then decide nothing.
 - **Reviewer sessions nobody can steer.** Each session is held by the platform: it is private, has
   no owner and no team, and is not listed. Nobody, the pull request's author included, can read its
   prompt or events, send it a message, use its sandbox, add collaborators or change its visibility.
@@ -122,17 +121,40 @@ The GitHub bot decides who may ask for a review. Everything after that happens i
   the text the turn ended with from the session's own events; a turn that ended on tool activity has
   no verdict. Review bodies on GitHub are never parsed: editing, dismissing or copying a review
   changes nothing about the check.
-- **All reviewers must approve.** The check concludes when every session of the attempt has
-  finished. A session that fails, runs past 90 minutes, or ends without a well-formed verdict makes
-  the attempt unfinished: `failure` when required, `neutral` in shadow, with **Re-run** to try
-  again. One worker at a time owns an attempt's conclusion, and an attempt that was replaced while
-  its check was being written is closed as "Superseded" instead. If the check cannot be written for
-  three hours, the attempt is given up so that a new review of the head can start.
-- **An approval passes only the pull request that was reviewed.** At the moment of concluding, the
+- **All reviewers must approve.** The attempt concludes when every session has finished. A session
+  that fails, runs past 90 minutes, or ends without a well-formed verdict makes the attempt
+  unfinished: `failure` when required, `neutral` in shadow, with **Re-run** to try again.
+- **An approval passes only the pull request that was reviewed.** Whenever the check is written, the
   pull request must still have the reviewed head and base branch. If the base branch moved on, the
   diff must hash the same as the one reviewed. And the pull request must be the only open one on
   that head commit: a check run belongs to a commit, so a pass would show on every pull request that
   shares it. If GitHub cannot confirm any of this, the check asks for a review instead of passing.
+
+### One check run per head, written from the database
+
+Each head commit of a pull request has one `AI Review` check run, and every state the head goes
+through is written to that run: a re-run sets it back to in progress, and a verdict, a carried
+verdict, an override or a request for a review each update it. A second run is created on a head
+only when GitHub will not take a change to the first (the run is gone, or the update is refused);
+the new run then becomes the head's run.
+
+No event writes a check directly. A review starting, a session's verdict, an override, a new head, a
+base change, a reopening and the 90-minute limit each record a fact in the database first. A single
+reconciler then reads what the database says about the head, works out the one state that implies,
+and writes it:
+
+- What a head's check rests on is one thing at a time: a review of that commit, a verdict carried
+  from an earlier review, an override, or nothing (with the reason it needs a review). A newer fact
+  replaces the older one in the same database write, so the order in which events arrive cannot
+  leave two answers standing.
+- A base change or a reopening is recorded before GitHub is asked anything. Whatever was reviewed or
+  still running before it can no longer pass, whether or not the check could be updated.
+- One reconciler at a time writes a head, under a short lease in the database, and it re-reads the
+  facts after writing: a fact that arrived meanwhile is written next. Writing the same state twice
+  is skipped.
+- If GitHub cannot be read or written, the facts are kept and the head is marked as behind. A pass
+  that runs every minute writes it once GitHub is back. After three hours it stops trying; the
+  head's next event (a re-run, a push, an override) writes the check again.
 
 ### Carry-forward
 

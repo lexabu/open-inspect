@@ -155,8 +155,18 @@ describe("the gate's GitHub client", () => {
     expect(
       await github().createCheck({ headSha: HEAD, externalId: "x", startedAt: "now" }, state)
     ).toBeNull();
-    expect(await github().updateCheck(31, state)).toBe(false);
+    await expect(github().updateCheck(31, state)).rejects.toThrow("could not be updated (403)");
   });
+
+  it.each([404, 410, 422])(
+    "tells a run GitHub will not change (%i) from GitHub being unwell",
+    async (status) => {
+      respond({ "/check-runs": () => new Response("No", { status }) });
+      const state = { status: "in_progress" as const, output: { title: "t", summary: "s" } };
+
+      expect(await github().updateCheck(31, state)).toBe(false);
+    }
+  );
 });
 
 describe("sharedHeadReason", () => {

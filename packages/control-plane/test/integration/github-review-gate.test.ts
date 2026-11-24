@@ -8,7 +8,6 @@ import {
   HEAD,
   NEW_BASE,
   NEW_HEAD,
-  pullKey,
   repository,
   SOL,
   started,
@@ -40,13 +39,13 @@ describe("starting a review", () => {
       baseRef: "main",
       baseSha: BASE,
       diffHash: "hash-of-the-usual-diff",
-      checkRunId: 1,
     });
+    expect(await h.evidence()).toEqual({ kind: "review", attemptId });
     expect(h.world.checks).toEqual([
       {
         id: 1,
         headSha: HEAD,
-        externalId: `open-inspect:pr=42;attempt=${attemptId}`,
+        externalId: "open-inspect:pr=42",
         states: [expect.objectContaining({ status: "in_progress" })],
       },
     ]);
@@ -93,22 +92,24 @@ describe("starting a review", () => {
     expect(h.world.checks).toHaveLength(1);
   });
 
-  it("supersedes a review of an earlier head, and closes its check run", async () => {
+  it("supersedes a review of an earlier head, whose check then asks for a review", async () => {
     const h = harness();
     const first = await started(h);
-    h.world.pull!.headSha = NEW_HEAD;
+    h.world.pull = { ...h.world.pull!, headSha: NEW_HEAD };
 
     const second = await started(h);
 
     expect(await h.attemptStatus(first)).toBe("superseded");
     expect(await h.attemptStatus(second)).toBe("running");
-    expect(h.latest(1)).toMatchObject({
-      status: "completed",
-      conclusion: "cancelled",
-      output: { title: "Superseded" },
-      reviewAction: false,
-    });
-    expect(h.world.checks[1]).toMatchObject({ headSha: NEW_HEAD });
+    expect(h.state(HEAD)).toMatchObject({ status: "completed", conclusion: "action_required" });
+    expect(h.state(HEAD)?.output.summary).toContain("A review of a newer commit replaced");
+    expect(h.shown(NEW_HEAD)).toBe("in_progress");
+    expect(h.world.checks).toHaveLength(2);
+
+    // The replaced review can no longer decide anything, on either head.
+    await h.complete("session-1", verdictBlock("approve"));
+    expect(h.shown(HEAD)).toBe("action_required");
+    expect(h.shown(NEW_HEAD)).toBe("in_progress");
   });
 
   it("leaves no running attempt behind when a session cannot be created", async () => {
@@ -117,26 +118,35 @@ describe("starting a review", () => {
 
     await expect(h.start([HAIKU, SOL])).rejects.toThrow("sandbox quota exceeded");
 
-    expect(await h.store.getActiveAttempt(pullKey)).toBeNull();
     expect(h.sessions.prompted).toEqual([]);
+    expect(await h.evidence()).toEqual({
+      kind: "none",
+      note: "The AI review could not be started.",
+    });
+    // Nothing is running, so the head must not be left in progress or passing.
+    expect(h.shown(HEAD)).toBe("action_required");
     h.sessions.failOn = null;
     expect(await h.start()).toMatchObject({ outcome: "started" });
+    expect(h.shown(HEAD)).toBe("in_progress");
+    expect(h.world.checks).toHaveLength(1);
   });
 
-  it("still concludes when GitHub refused the in-progress check run", async () => {
+  it("reviews again on the same check run when a concluded head is re-run", async () => {
     const h = harness();
-    h.world.createFails = true;
     await started(h);
-    expect(h.log.error).toHaveBeenCalledWith(
-      "github_review.check_create_failed",
-      expect.anything()
-    );
-    h.world.createFails = false;
+    await h.complete("session-1", verdictBlock("request_changes"));
 
-    await h.complete("session-1", verdictBlock("approve"));
+    await started(h);
+    expect(h.shown(HEAD)).toBe("in_progress");
+    await h.complete("session-2", verdictBlock("approve"));
 
     expect(h.world.checks).toHaveLength(1);
-    expect(h.latest(1)).toMatchObject({ status: "completed", conclusion: "success" });
+    expect(h.world.checks[0].states.map((state) => state.output.title)).toEqual([
+      "AI review in progress",
+      "Changes requested",
+      "AI review in progress",
+      "Approved",
+    ]);
   });
 });
 
@@ -154,15 +164,7 @@ describe("concluding from the sessions' own verdicts", () => {
       reviewAction: false,
     });
     expect(await h.attemptStatus(attemptId)).toBe("concluded");
-    expect(await h.store.getVerdict(pullKey)).toMatchObject({
-      sha: HEAD,
-      reviewedSha: HEAD,
-      baseRef: "main",
-      baseSha: BASE,
-      diffHash: "hash-of-the-usual-diff",
-      approved: true,
-      attemptId,
-    });
+    expect(await h.evidence()).toEqual({ kind: "review", attemptId });
   });
 
   it.each([
@@ -184,7 +186,6 @@ describe("concluding from the sessions' own verdicts", () => {
     expect(summary).toContain("- Claude Haiku 4.5: changes requested. The cache never expires.");
     expect(summary).toContain("`@test-bot override aaaaaaa <reason>`");
     expect(summary.includes("Shadow mode")).toBe(mode === "shadow");
-    expect(await h.store.getVerdict(pullKey)).toMatchObject({ approved: false });
   });
 
   it("waits for every reviewer, and passes only when all approve", async () => {
@@ -228,7 +229,7 @@ describe("concluding from the sessions' own verdicts", () => {
     expect(state?.output.summary).toContain("Re-run this check");
     expect(await h.attemptStatus(attemptId)).toBe("concluded");
     // An unfinished review is evidence of nothing: no verdict to carry forward.
-    expect(await h.store.getVerdict(pullKey)).toBeNull();
+    expect(await h.store.findCarrySource({ repoId: 99, prNumber: 42 })).toBeNull();
   });
 
   it("takes each session's first report and nothing after it", async () => {
@@ -239,7 +240,7 @@ describe("concluding from the sessions' own verdicts", () => {
     await h.complete("session-1", verdictBlock("approve"));
 
     expect(h.latest(1)).toMatchObject({ conclusion: "failure" });
-    expect(await h.store.getVerdict(pullKey)).toMatchObject({ approved: false });
+    expect(h.world.checks[0].states).toHaveLength(2);
   });
 
   it("ignores a session that is not a reviewer session", async () => {
@@ -280,7 +281,7 @@ describe("an approval passes only the pull request that was reviewed", () => {
         h.world.pull!.baseSha = NEW_BASE;
         h.world.diffs.set(`${NEW_BASE}...${HEAD}`, "hash-of-another-diff");
       },
-      "moved during the review",
+      "could not be shown to be the one that was reviewed",
     ],
     [
       "the base moved on and the diff cannot be hashed",
@@ -288,7 +289,7 @@ describe("an approval passes only the pull request that was reviewed", () => {
         h.world.pull!.baseSha = NEW_BASE;
         h.world.diffs.set(`${NEW_BASE}...${HEAD}`, null);
       },
-      "moved during the review",
+      "could not be shown to be the one that was reviewed",
     ],
     [
       "the base branch changed",
@@ -305,11 +306,6 @@ describe("an approval passes only the pull request that was reviewed", () => {
       (h: ReturnType<typeof harness>) => (h.world.pull!.headSha = NEW_HEAD),
       "no longer the head",
     ],
-    [
-      "the pull request cannot be read",
-      (h: ReturnType<typeof harness>) => (h.world.pull = null),
-      "Could not read #42",
-    ],
   ])("asks for a review instead when %s", async (_name, arrange, text) => {
     const h = harness();
     await started(h);
@@ -325,8 +321,7 @@ describe("an approval passes only the pull request that was reviewed", () => {
     });
     expect(state?.output.summary).toContain(text);
     // The reviewers did approve the diff they were given; that evidence is kept.
-    expect(await h.store.getVerdict(pullKey)).toMatchObject({
-      approved: true,
+    expect(await h.store.findCarrySource({ repoId: 99, prNumber: 42 })).toMatchObject({
       diffHash: "hash-of-the-usual-diff",
     });
   });
@@ -342,24 +337,7 @@ describe("an approval passes only the pull request that was reviewed", () => {
   });
 });
 
-describe("recovery", () => {
-  it("writes the check again when the conclusion could not be written", async () => {
-    const h = harness();
-    const attemptId = await started(h);
-    h.world.updateFails = true;
-    await expect(h.complete("session-1", verdictBlock("approve"))).rejects.toThrow(
-      "could not be written"
-    );
-    expect(await h.attemptStatus(attemptId)).toBe("running");
-    expect(await h.store.getVerdict(pullKey)).toBeNull();
-
-    h.world.updateFails = false;
-    await h.gate.recover();
-
-    expect(h.latest(1)).toMatchObject({ conclusion: "success" });
-    expect(await h.attemptStatus(attemptId)).toBe("concluded");
-  });
-
+describe("the time limit", () => {
   it("concludes an attempt as unfinished once its sessions are past the time limit", async () => {
     const h = harness("shadow");
     const attemptId = await started(h, [HAIKU, SOL]);
@@ -377,9 +355,13 @@ describe("recovery", () => {
     });
     expect(h.latest(1)?.output.summary).toContain("did not report within the time limit");
     expect(await h.attemptStatus(attemptId)).toBe("concluded");
+
+    // A session that reports after the limit changes nothing.
+    await h.complete("session-2", verdictBlock("approve"));
+    expect(h.latest(1)).toMatchObject({ output: { title: "The AI review did not finish" } });
   });
 
-  it("drops an old attempt that never recorded a session, so a new review can start", async () => {
+  it("concludes an old attempt that never recorded a session, so a new review can start", async () => {
     const h = harness();
     await h.store.claimAttempt(
       {
@@ -397,20 +379,15 @@ describe("recovery", () => {
     );
     expect(await h.start()).toEqual({ outcome: "skipped", reason: "review_in_progress" });
 
+    h.clock.now += 120_000;
     await h.gate.recover();
 
-    expect(await h.attemptStatus("orphan")).toBe("superseded");
+    expect(await h.attemptStatus("orphan")).toBe("concluded");
+    expect(h.state(HEAD)).toMatchObject({
+      conclusion: "failure",
+      output: { title: "The AI review did not finish" },
+    });
     expect(await h.start()).toMatchObject({ outcome: "started" });
-  });
-
-  it("keeps going when one attempt cannot be recovered", async () => {
-    const h = harness();
-    await started(h);
-    h.world.updateFails = true;
-    await expect(h.complete("session-1", verdictBlock("approve"))).rejects.toThrow();
-
-    await expect(h.gate.recover()).resolves.toBeUndefined();
-    expect(h.log.error).toHaveBeenCalledWith("github_review.recovery_failed", expect.anything());
   });
 });
 
@@ -419,8 +396,7 @@ describe("a pull request that changed", () => {
   async function reviewedThenPushed(h: ReturnType<typeof harness>, verdict = "approve") {
     const attemptId = await started(h);
     await h.complete("session-1", verdictBlock(verdict));
-    h.world.pull!.headSha = NEW_HEAD;
-    h.world.pull!.baseSha = NEW_BASE;
+    h.world.pull = { ...h.world.pull!, headSha: NEW_HEAD, baseSha: NEW_BASE };
     return attemptId;
   }
 
@@ -462,19 +438,13 @@ describe("a pull request that changed", () => {
 
     expect(await h.change("head")).toEqual({ outcome: "carried_forward" });
 
-    const carried = h.world.checks.at(-1);
-    expect(carried).toMatchObject({ headSha: NEW_HEAD, externalId: "open-inspect:pr=42" });
-    expect(carried?.states[0]).toMatchObject({
+    expect(h.state(NEW_HEAD)).toMatchObject({
       conclusion: "success",
       reviewAction: false,
       output: { title: "Approved (carried forward)" },
     });
-    expect(carried?.states[0].output.summary).toContain("Carried forward from commit `aaaaaaa`");
-    expect(await h.store.getVerdict(pullKey)).toMatchObject({
-      sha: NEW_HEAD,
-      reviewedSha: HEAD,
-      attemptId,
-    });
+    expect(h.state(NEW_HEAD)?.output.summary).toContain("Carried forward from commit `aaaaaaa`");
+    expect(await h.evidence()).toEqual({ kind: "carried", attemptId });
     // The evidence outlives the verdict that rests on it.
     expect(await h.attemptStatus(attemptId)).toBe("concluded");
   });
@@ -485,11 +455,35 @@ describe("a pull request that changed", () => {
     h.world.shared = "Commit is also the head of #57.";
 
     expect(await h.change("head")).toEqual({ outcome: "carried_forward" });
-    expect(h.world.checks.at(-1)?.states[0]).toMatchObject({
+    expect(h.state(NEW_HEAD)).toMatchObject({
       conclusion: "failure",
       reviewAction: true,
       output: { title: "Not approved (carried forward)" },
     });
+  });
+
+  it("carries an approval onward, from the review, over several pushes", async () => {
+    const h = harness();
+    const attemptId = await reviewedThenPushed(h);
+    await h.change("head");
+    const third = "e".repeat(40);
+    h.world.pull = { ...h.world.pull!, headSha: third };
+
+    expect(await h.change("head")).toEqual({ outcome: "carried_forward" });
+
+    expect(await h.evidence(third)).toEqual({ kind: "carried", attemptId });
+    expect(h.shown(third)).toBe("success");
+  });
+
+  it("holds a carried approval back while another pull request shares the new head", async () => {
+    const h = harness();
+    await reviewedThenPushed(h);
+    h.world.shared = "Commit is also the head of #57.";
+
+    expect(await h.change("head")).toEqual({ outcome: "carried_forward" });
+
+    expect(h.state(NEW_HEAD)).toMatchObject({ conclusion: "action_required" });
+    expect(h.state(NEW_HEAD)?.output.summary).toContain("#57");
   });
 
   it.each([
@@ -509,11 +503,6 @@ describe("a pull request that changed", () => {
       (h: ReturnType<typeof harness>) => (h.world.pull!.baseRef = "release"),
       "No AI review covers this diff.",
     ],
-    [
-      "another open pull request shares the new head",
-      (h: ReturnType<typeof harness>) => (h.world.shared = "Commit is also the head of #57."),
-      "#57",
-    ],
   ])("asks for a review instead of carrying an approval when %s", async (_name, arrange, text) => {
     const h = harness();
     await reviewedThenPushed(h);
@@ -521,10 +510,9 @@ describe("a pull request that changed", () => {
 
     expect(await h.change("head")).toEqual({ outcome: "needs_review" });
 
-    const state = h.world.checks.at(-1)?.states[0];
-    expect(state).toMatchObject({ status: "completed", conclusion: "action_required" });
-    expect(state?.output.summary).toContain(text);
-    expect(await h.store.getVerdict(pullKey)).toMatchObject({ sha: HEAD });
+    expect(h.state(NEW_HEAD)).toMatchObject({ status: "completed", conclusion: "action_required" });
+    expect(h.state(NEW_HEAD)?.output.summary).toContain(text);
+    expect(await h.evidence()).toMatchObject({ kind: "none" });
   });
 
   it("never carries a verdict whose reviewed diff could not be hashed", async () => {
@@ -561,29 +549,29 @@ describe("a pull request that changed", () => {
   });
 
   it.each([
-    ["base", "The base branch changed to `release`."],
+    ["base", "The base branch changed."],
     ["reopened", "The pull request was reopened."],
   ] as const)("drops the verdict and the running review on a %s change", async (kind, text) => {
     const h = harness();
     await started(h);
     await h.complete("session-1", verdictBlock("approve"));
-    h.world.pull!.headSha = NEW_HEAD;
+    h.world.pull = { ...h.world.pull!, headSha: NEW_HEAD };
     const running = await started(h);
-    if (kind === "base") h.world.pull!.baseRef = "release";
+    if (kind === "base") h.world.pull = { ...h.world.pull!, baseRef: "release" };
 
     expect(await h.change(kind)).toEqual({ outcome: "needs_review" });
 
-    expect(await h.store.getVerdict(pullKey)).toBeNull();
     expect(await h.attemptStatus(running)).toBe("superseded");
-    expect(h.latest(2)).toMatchObject({ conclusion: "cancelled", output: { title: "Superseded" } });
-    const posted = h.world.checks.at(-1);
-    expect(posted).toMatchObject({ headSha: NEW_HEAD, externalId: "open-inspect:pr=42" });
-    expect(posted?.states[0].output.summary).toContain(text);
+    expect(h.state(NEW_HEAD)).toMatchObject({ conclusion: "action_required" });
+    expect(h.state(NEW_HEAD)?.output.summary).toContain(text);
+    // The earlier head's approval is gone too: it was of another pull request.
+    expect(h.shown(HEAD)).toBe("action_required");
+    expect(h.world.checks).toHaveLength(2);
 
-    // The superseded review can no longer decide anything.
+    // The dropped review can no longer decide anything, and nothing carries over.
     await h.complete("session-2", verdictBlock("approve"));
-    expect(h.latest(2)).toMatchObject({ output: { title: "Superseded" } });
-    expect(await h.store.getVerdict(pullKey)).toBeNull();
+    expect(h.shown(NEW_HEAD)).toBe("action_required");
+    expect(await h.store.findCarrySource({ repoId: 99, prNumber: 42 })).toBeNull();
   });
 
   it("posts a check that asks for a review when the bot could not start one", async () => {
@@ -603,9 +591,19 @@ describe("a pull request that changed", () => {
 
     expect(await h.change("review_not_started", "review_in_progress")).toEqual({
       outcome: "skipped",
-      reason: "review_in_progress",
+      reason: "already_covered",
     });
     expect(h.world.checks).toHaveLength(1);
+    expect(h.shown(HEAD)).toBe("in_progress");
+  });
+
+  it("leaves a running review's check alone when the head event arrives late", async () => {
+    const h = harness();
+    await started(h);
+
+    expect(await h.change("head")).toEqual({ outcome: "skipped", reason: "already_covered" });
+    expect(h.world.checks).toHaveLength(1);
+    expect(h.world.checks[0].states).toHaveLength(1);
   });
 });
 
@@ -616,44 +614,33 @@ describe("override", () => {
 
     expect(await h.override()).toEqual({ outcome: "overridden", headSha: HEAD });
 
-    expect(h.world.checks.at(-1)).toMatchObject({
-      headSha: HEAD,
-      externalId: "open-inspect:pr=42",
-      states: [
-        {
-          status: "completed",
-          conclusion: "success",
-          output: {
-            title: "Overridden by @bob",
-            summary:
-              "@bob overrode the AI Review check on commit `aaaaaaa`.\n\nReason: verified by hand",
-          },
-          reviewAction: false,
-        },
-      ],
+    expect(h.world.checks).toHaveLength(1);
+    expect(h.state(HEAD)).toEqual({
+      status: "completed",
+      conclusion: "success",
+      output: {
+        title: "Overridden by @bob",
+        summary:
+          "@bob overrode the AI Review check on commit `aaaaaaa`.\n\nReason: verified by hand",
+      },
+      reviewAction: false,
     });
-    expect(await h.store.getVerdict(pullKey)).toMatchObject({
-      sha: HEAD,
-      approved: true,
-      attemptId: null,
-    });
+    expect(await h.evidence()).toEqual({ kind: "override", by: "bob", reason: "verified by hand" });
     expect(await h.attemptStatus(running)).toBe("superseded");
-    expect(h.latest(1)).toMatchObject({ output: { title: "Superseded" } });
 
     // The review that was in flight reports afterwards: the override stands.
     await h.complete("session-1", verdictBlock("request_changes"));
-    expect(await h.store.getVerdict(pullKey)).toMatchObject({ approved: true, attemptId: null });
-    expect(h.latest(1)).toMatchObject({ output: { title: "Superseded" } });
+    expect(h.state(HEAD)).toMatchObject({ output: { title: "Overridden by @bob" } });
   });
 
   it("applies to the commit it names only: a later head asks for a review", async () => {
     const h = harness();
     await h.override();
     // The same diff on a new head, as after "Update branch": a review would carry forward.
-    h.world.pull!.headSha = NEW_HEAD;
+    h.world.pull = { ...h.world.pull!, headSha: NEW_HEAD };
 
     expect(await h.change("head")).toEqual({ outcome: "needs_review" });
-    expect(h.world.checks.at(-1)?.states[0]).toMatchObject({ conclusion: "action_required" });
+    expect(h.shown(NEW_HEAD)).toBe("action_required");
   });
 
   it.each([
@@ -684,6 +671,6 @@ describe("override", () => {
 
     expect(await h.override()).toEqual({ outcome: "refused", reason, detail: "" });
     expect(h.world.checks).toEqual([]);
-    expect(await h.store.getVerdict(pullKey)).toBeNull();
+    expect(await h.evidence()).toBeUndefined();
   });
 });

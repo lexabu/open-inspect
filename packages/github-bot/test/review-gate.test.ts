@@ -150,7 +150,7 @@ describe("starting a gated review", () => {
     });
   });
 
-  it.each(["review_in_progress", "stale_head", "stale_base", "superseded", "draft_pr"] as const)(
+  it.each(["review_in_progress", "stale_head", "stale_base", "draft_pr"] as const)(
     "passes on the control plane's %s",
     async (reason) => {
       const { env, gateCalls } = createEnv({ reviews: { outcome: "skipped", reason } });
@@ -250,23 +250,6 @@ describe("check re-run", () => {
       "bob",
       expect.any(String)
     );
-  });
-
-  it("finds the pull request from the check's external id, with or without an attempt", async () => {
-    const { env, gateCalls } = createEnv();
-    const withAttempt = {
-      ...rerequested,
-      check_run: { ...rerequested.check_run, external_id: "open-inspect:pr=42;attempt=abc123" },
-    };
-
-    await click(env, withAttempt);
-
-    expect(getPullRequest).toHaveBeenCalledWith(
-      "installation-token",
-      "https://api.github.com/repos/acme/widgets/pulls/42",
-      expect.any(String)
-    );
-    expect(gateCalls("reviews")).toHaveLength(1);
   });
 
   it.each([

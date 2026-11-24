@@ -21,7 +21,7 @@ export type CheckRunState =
   | { status: "in_progress"; output: CheckOutput }
   | {
       status: "completed";
-      conclusion: "success" | "failure" | "neutral" | "action_required" | "cancelled";
+      conclusion: "success" | "failure" | "neutral" | "action_required";
       output: CheckOutput;
       /** Offer the "Review now" button. */
       reviewAction: boolean;
@@ -55,6 +55,8 @@ const headPullsSchema = z.array(
 );
 const createdCheckRunSchema = z.object({ id: z.number() });
 const PULLS_PAGE_SIZE = 100;
+/** Answers that are about the check run itself, not about GitHub being unwell. */
+const RUN_REFUSED = new Set([404, 410, 422]);
 
 export interface GateGitHub {
   /** The pull request, or null when GitHub cannot be read. */
@@ -75,6 +77,11 @@ export interface GateGitHub {
     run: { headSha: string; externalId: string; startedAt: string },
     state: CheckRunState
   ): Promise<number | null>;
+  /**
+   * Writes a state to an existing check run. False when GitHub will not take the change
+   * on that run (the run is gone, or the change is refused), which calls for a new run;
+   * a failure that says nothing about the run (a timeout, a server error) is thrown.
+   */
   updateCheck(checkRunId: number, state: CheckRunState): Promise<boolean>;
 }
 
@@ -200,7 +207,11 @@ export function createGateGitHub(
         method: "PATCH",
         body: checkRunBody(state),
       });
-      return response?.ok === true;
+      if (response?.ok) return true;
+      if (response !== null && RUN_REFUSED.has(response.status)) return false;
+      throw new Error(
+        `AI Review check run ${checkRunId} could not be updated (${response?.status ?? "no response"})`
+      );
     },
   };
 }

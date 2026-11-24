@@ -1,8 +1,12 @@
 -- The GitHub bot's AI Review merge gate.
 --
+-- Everything the gate knows is a fact in these tables. Events write facts; the check run
+-- GitHub shows for a head is computed from them and written by one reconciler, so the
+-- order in which events and GitHub writes happen cannot change what a head ends up showing.
+
 -- An attempt is one review of one head commit of one pull request, by one session per
--- configured reviewer. The control plane owns it end to end: it creates the sessions,
--- reads each session's verdict when it completes, and writes the check run.
+-- configured reviewer. The control plane creates the sessions and reads each session's
+-- verdict when it completes.
 CREATE TABLE github_review_attempts (
   id TEXT PRIMARY KEY,
   repo_owner TEXT NOT NULL,
@@ -14,16 +18,10 @@ CREATE TABLE github_review_attempts (
   base_ref TEXT NOT NULL,
   base_sha TEXT NOT NULL,
   diff_hash TEXT,
-  -- The attempt's own check run; NULL until GitHub has created it.
-  check_run_id INTEGER,
-  -- running: its sessions are working. concluding: one worker owns the conclusion and is
-  -- writing the check. concluded, superseded: done. abandoned: its check could not be
-  -- written for too long, and it was given up so it stops holding the pull request.
-  status TEXT NOT NULL
-    CHECK (status IN ('running', 'concluding', 'concluded', 'superseded', 'abandoned')),
+  -- running: its sessions are working. concluded: every session has reported, or the
+  -- attempt ran out of time. superseded: replaced or invalidated; it is evidence of nothing.
+  status TEXT NOT NULL CHECK (status IN ('running', 'concluded', 'superseded')),
   created_at INTEGER NOT NULL,
-  -- When the conclusion was claimed; a claim left by a worker that died is released.
-  concluding_at INTEGER,
   finished_at INTEGER
 );
 
@@ -31,13 +29,14 @@ CREATE TABLE github_review_attempts (
 -- change who can read it, so nobody can steer the verdict it reports.
 ALTER TABLE sessions ADD COLUMN platform_held INTEGER NOT NULL DEFAULT 0;
 
--- At most one attempt is active per pull request: starting one is an insert that this
--- index refuses while another is running or concluding.
-CREATE UNIQUE INDEX idx_github_review_attempts_active
+-- At most one attempt runs per pull request: starting one is an insert that this index
+-- refuses while another is running.
+CREATE UNIQUE INDEX idx_github_review_attempts_running
   ON github_review_attempts (repo_id, pr_number)
-  WHERE status IN ('running', 'concluding');
+  WHERE status = 'running';
 
-CREATE INDEX idx_github_review_attempts_status ON github_review_attempts (status, created_at);
+CREATE INDEX idx_github_review_attempts_pull
+  ON github_review_attempts (repo_id, pr_number, status, created_at);
 
 -- One row per reviewer session of an attempt.
 CREATE TABLE github_review_attempt_sessions (
@@ -56,22 +55,33 @@ CREATE TABLE github_review_attempt_sessions (
   PRIMARY KEY (attempt_id, position)
 );
 
--- The last verdict on a pull request: the evidence a later head with the same diff
--- carries forward. Kept for as long as the pull request can use it; attempts are never
--- deleted, so a verdict's attempt always outlives it.
-CREATE TABLE github_review_verdicts (
+-- One row per head commit of a pull request that the gate has seen: what its check rests
+-- on, and the one check run that shows it.
+CREATE TABLE github_review_heads (
   repo_id INTEGER NOT NULL,
   pr_number INTEGER NOT NULL,
-  -- The head the verdict applies to, and the commit that was reviewed or overridden.
-  sha TEXT NOT NULL,
-  reviewed_sha TEXT NOT NULL,
-  base_ref TEXT NOT NULL,
-  base_sha TEXT NOT NULL,
-  diff_hash TEXT,
-  approved INTEGER NOT NULL,
-  summary TEXT NOT NULL,
-  -- NULL for a human override.
+  head_sha TEXT NOT NULL,
+  repo_owner TEXT NOT NULL,
+  repo_name TEXT NOT NULL,
+  -- What the head's check rests on. At most one of these is set:
+  -- a review of this very head (running or concluded),
   attempt_id TEXT REFERENCES github_review_attempts (id),
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (repo_id, pr_number)
+  -- a concluded review of an earlier head whose diff is the same,
+  carried_attempt_id TEXT REFERENCES github_review_attempts (id),
+  -- or a person's override of this commit.
+  override_by TEXT,
+  override_reason TEXT,
+  -- Why the head needs a review, when it rests on nothing.
+  note TEXT,
+  -- The head's one check run; created once, then only updated.
+  check_run_id INTEGER,
+  -- Bumped by every fact written about the head. The reconciler records the version and
+  -- the state it published; a head whose version is ahead of that is dirty.
+  version INTEGER NOT NULL DEFAULT 1,
+  published_version INTEGER,
+  published_state TEXT,
+  -- Held by the one reconciler writing the head's check run; expires if it dies.
+  lease_until INTEGER,
+  changed_at INTEGER NOT NULL,
+  PRIMARY KEY (repo_id, pr_number, head_sha)
 );

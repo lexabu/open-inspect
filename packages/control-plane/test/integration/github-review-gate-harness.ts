@@ -54,8 +54,11 @@ export function fakeGitHub() {
     duringNextHash: null as (() => Promise<unknown>) | null,
     /** Runs once, right after the next check run is created. */
     afterNextCreate: null as (() => Promise<unknown>) | null,
+    /** GitHub is unwell: no check run can be created or updated. */
     createFails: false,
     updateFails: false,
+    /** GitHub will not take a change to an existing run, as for a run that is gone. */
+    updateRefused: false,
     /** Every check run, with the states written to it, newest state last. */
     checks: [] as { id: number; headSha: string; externalId: string; states: CheckRunState[] }[],
   };
@@ -84,17 +87,28 @@ export function fakeGitHub() {
       return id;
     },
     updateCheck: async (id, state) => {
-      if (world.updateFails) return false;
+      if (world.updateFails) throw new Error("GitHub answered 502");
+      if (world.updateRefused) return false;
       world.checks.find((check) => check.id === id)?.states.push(state);
       return true;
     },
   };
   const latest = (id: number) => world.checks.find((check) => check.id === id)?.states.at(-1);
-  return { world, github, latest };
+  /** What GitHub shows for a head: the newest state of the newest AI Review run on it. */
+  const state = (headSha: string) =>
+    world.checks
+      .filter((check) => check.headSha === headSha)
+      .at(-1)
+      ?.states.at(-1);
+  const shown = (headSha: string) => {
+    const current = state(headSha);
+    return current?.status === "completed" ? current.conclusion : current?.status;
+  };
+  return { world, github, latest, state, shown };
 }
 
 export function harness(mode: GitHubMergeGate = "required") {
-  const { world, github, latest } = fakeGitHub();
+  const { world, github, latest, state, shown } = fakeGitHub();
   const settings = { mode };
   const clock = { now: Date.parse("2026-11-23T10:00:00.000Z") };
   const store = new ReviewGateStore(env.DB);
@@ -173,11 +187,16 @@ export function harness(mode: GitHubMergeGate = "required") {
       repository
     );
   const attemptStatus = async (id: string) => (await store.getAttempt(id))?.status;
+  /** What a head's check rests on, as the database has it. */
+  const evidence = async (headSha = world.pull?.headSha ?? HEAD) =>
+    (await store.getHead({ ...pullKey, headSha }))?.evidence;
   return {
     gate,
     store,
     world,
     latest,
+    state,
+    shown,
     settings,
     clock,
     sessions,
@@ -188,6 +207,7 @@ export function harness(mode: GitHubMergeGate = "required") {
     change,
     override,
     attemptStatus,
+    evidence,
   };
 }
 
