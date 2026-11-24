@@ -9,9 +9,8 @@ import {
   postReaction,
   postIssueComment,
   checkSenderPermission,
-  listPullRequestReviews,
 } from "./github-auth";
-import { isBotLogin } from "@open-inspect/shared/github-mention";
+import { commitReviewClaim } from "./commit-review-gate";
 import { resolveSessionTarget } from "./session-target";
 import { createSession, sendPrompt } from "./session-client";
 import { getGitHubConfig, type ResolvedGitHubConfig } from "./utils/integration-config";
@@ -163,8 +162,11 @@ export async function startSession(
     reactionPath: string;
     /** `!model` / `!reasoning` flags parsed from the triggering comment, if any. */
     inlineFlags?: ParseInlinePromptFlagsResult;
-    /** Skip when the bot has already reviewed this commit (the pre-merge review). */
-    skipIfReviewedCommit?: string;
+    /**
+     * The commit a review runs on, claimed while it runs. A pre-merge review skips a
+     * commit that is claimed, already reviewed by the bot, or no longer the live head.
+     */
+    reviewedCommit?: { sha: string; preMerge: boolean };
     buildPrompt: (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string;
   }
 ): Promise<HandlerResult> {
@@ -203,23 +205,24 @@ export async function startSession(
   const userAgent = resolveAppName(env);
   const meta = { trace_id: traceId, repo: repoFullName, pull_number: pullNumber };
 
-  if (params.skipIfReviewedCommit !== undefined) {
-    const commit = params.skipIfReviewedCommit;
-    const reviews = await listPullRequestReviews(
-      ghToken,
-      `https://api.github.com/repos/${repositoryPath}/pulls/${pullNumber}/reviews`,
-      userAgent
-    );
-    // Unreadable reviews start the review anyway: a duplicate costs less than a missed pass.
-    if (reviews === null) {
-      log.warn("handler.reviews_unreadable", { ...meta, commit });
-    } else if (
-      reviews.some(
-        (review) => review.commitId === commit && isBotLogin(review.login, env.GITHUB_BOT_USERNAME)
+  const claim = params.reviewedCommit
+    ? commitReviewClaim(
+        env,
+        log,
+        {
+          token: ghToken,
+          userAgent,
+          pullUrl: `https://api.github.com/repos/${repositoryPath}/pulls/${pullNumber}`,
+        },
+        meta,
+        params.reviewedCommit.sha
       )
-    ) {
-      log.info("handler.commit_already_reviewed", { ...meta, commit });
-      return { outcome: "skipped", skip_reason: "commit_already_reviewed" };
+    : null;
+  if (claim && params.reviewedCommit?.preMerge) {
+    const skipReason = await claim.checkPreMerge();
+    if (skipReason !== null) {
+      log.info("handler.pre_merge_review_skipped", { ...meta, skip_reason: skipReason });
+      return { outcome: "skipped", skip_reason: skipReason };
     }
   }
 
@@ -250,147 +253,162 @@ export async function startSession(
   }
   const reviewerCount = selections.length;
 
-  return withReaction(
-    log,
-    ghToken,
-    `https://api.github.com/repos/${repositoryPath}/${params.reactionPath}/reactions`,
-    userAgent,
-    meta,
-    async () => {
-      // Deprecated auto-review is always workspace-level and never needs a route lookup.
-      // The pre-merge review routes like a review request, so it follows the PR's session.
-      const teamId =
-        action === "auto_review"
-          ? null
-          : (
-              await resolveGitHubRoute(env, log, traceId, {
-                repositoryId: repo.id,
-                pullNumber,
-                senderId: sender.id,
-              })
-            ).teamId;
-      const target = await resolveSessionTarget(env, log, {
-        owner,
-        repoName,
-        teamId,
-        senderId: sender.id,
-        senderLogin: sender.login,
-        config,
-        ghToken,
-        traceId,
-      });
+  await claim?.claim();
+  let result: HandlerResult;
+  try {
+    result = await launchSessions();
+  } catch (error) {
+    await claim?.release();
+    throw error;
+  }
+  if (result.outcome === "skipped") await claim?.release();
+  return result;
 
-      const launch = async (selection: ModelSelection): Promise<LaunchOutcome> => {
-        const modelName = getModelDisplayName(selection.model);
-        const creation = await createSession(env, traceId, {
-          target,
+  function launchSessions(): Promise<HandlerResult> {
+    return withReaction(
+      log,
+      ghToken,
+      `https://api.github.com/repos/${repositoryPath}/${params.reactionPath}/reactions`,
+      userAgent,
+      meta,
+      async () => {
+        // Deprecated auto-review is always workspace-level and never needs a route lookup.
+        // The pre-merge review routes like a review request, so it follows the PR's session.
+        const teamId =
+          action === "auto_review"
+            ? null
+            : (
+                await resolveGitHubRoute(env, log, traceId, {
+                  repositoryId: repo.id,
+                  pullNumber,
+                  senderId: sender.id,
+                })
+              ).teamId;
+        const target = await resolveSessionTarget(env, log, {
+          owner,
+          repoName,
           teamId,
-          title: reviewerCount > 1 ? `${params.title} (${modelName})` : params.title,
-          model: selection.model,
-          harness: selection.harness,
-          reasoningEffort: selection.reasoningEffort,
-          scmLogin: sender.login,
-          scmUserId: String(sender.id),
-          scmAvatarUrl: sender.avatar_url,
-        });
-        if (!creation.ok) {
-          const { status, code, body } = creation;
-          if (isRefusal(status, code)) return { kind: "refused", code };
-          throw new Error(`Session creation failed: ${status} ${body}`);
-        }
-        const { sessionId } = creation;
-        log.info("session.created", {
-          ...meta,
-          session_id: sessionId,
-          action,
-          model: selection.model,
-          harness: selection.harness,
-          reasoning_effort: selection.reasoningEffort,
-          inline_model_override: inlineModelOverride,
-          reviewer_count: reviewerCount,
+          senderId: sender.id,
+          senderLogin: sender.login,
+          config,
+          ghToken,
+          traceId,
         });
 
-        const prompt = params.buildPrompt(
-          config,
-          reviewerCount > 1 ? { modelName, reviewerCount } : null
-        );
-        const messageId = await sendPrompt(env, traceId, sessionId, {
-          content: prompt,
-          authorId: `github:${sender.id}`,
-        }).catch((error: unknown) => {
-          // The session exists but got no prompt; name it so it can be found and archived.
-          log.error("session.prompt_failed", {
+        const launch = async (selection: ModelSelection): Promise<LaunchOutcome> => {
+          const modelName = getModelDisplayName(selection.model);
+          const creation = await createSession(env, traceId, {
+            target,
+            teamId,
+            title: reviewerCount > 1 ? `${params.title} (${modelName})` : params.title,
+            model: selection.model,
+            harness: selection.harness,
+            reasoningEffort: selection.reasoningEffort,
+            scmLogin: sender.login,
+            scmUserId: String(sender.id),
+            scmAvatarUrl: sender.avatar_url,
+          });
+          if (!creation.ok) {
+            const { status, code, body } = creation;
+            if (isRefusal(status, code)) return { kind: "refused", code };
+            throw new Error(`Session creation failed: ${status} ${body}`);
+          }
+          const { sessionId } = creation;
+          log.info("session.created", {
             ...meta,
             session_id: sessionId,
+            action,
             model: selection.model,
+            harness: selection.harness,
+            reasoning_effort: selection.reasoningEffort,
+            inline_model_override: inlineModelOverride,
+            reviewer_count: reviewerCount,
           });
-          throw error;
-        });
-        log.info("prompt.sent", {
-          ...meta,
-          session_id: sessionId,
-          message_id: messageId,
-          source: "github",
-          content_length: prompt.length,
-        });
-        return {
-          kind: "launched",
-          session: { session_id: sessionId, message_id: messageId, model: selection.model },
+
+          const prompt = params.buildPrompt(
+            config,
+            reviewerCount > 1 ? { modelName, reviewerCount } : null
+          );
+          const messageId = await sendPrompt(env, traceId, sessionId, {
+            content: prompt,
+            authorId: `github:${sender.id}`,
+          }).catch((error: unknown) => {
+            // The session exists but got no prompt; name it so it can be found and archived.
+            log.error("session.prompt_failed", {
+              ...meta,
+              session_id: sessionId,
+              model: selection.model,
+            });
+            throw error;
+          });
+          log.info("prompt.sent", {
+            ...meta,
+            session_id: sessionId,
+            message_id: messageId,
+            source: "github",
+            content_length: prompt.length,
+          });
+          return {
+            kind: "launched",
+            session: { session_id: sessionId, message_id: messageId, model: selection.model },
+          };
         };
-      };
 
-      const outcomes = await Promise.allSettled(selections.map(launch));
-      const sessions: LaunchedSession[] = [];
-      const failedModels: string[] = [];
-      let refusal: RefusalCode | null = null;
-      let firstError: unknown = null;
-      for (const [index, outcome] of outcomes.entries()) {
-        const { model } = selections[index];
-        if (outcome.status === "rejected") {
-          failedModels.push(model);
-          firstError ??= outcome.reason;
-          log.error("session.reviewer_launch_failed", {
-            ...meta,
-            model,
-            error:
-              outcome.reason instanceof Error ? outcome.reason : new Error(String(outcome.reason)),
-          });
-        } else if (outcome.value.kind === "refused") {
-          failedModels.push(model);
-          refusal ??= outcome.value.code;
-        } else {
-          sessions.push(outcome.value.session);
+        const outcomes = await Promise.allSettled(selections.map(launch));
+        const sessions: LaunchedSession[] = [];
+        const failedModels: string[] = [];
+        let refusal: RefusalCode | null = null;
+        let firstError: unknown = null;
+        for (const [index, outcome] of outcomes.entries()) {
+          const { model } = selections[index];
+          if (outcome.status === "rejected") {
+            failedModels.push(model);
+            firstError ??= outcome.reason;
+            log.error("session.reviewer_launch_failed", {
+              ...meta,
+              model,
+              error:
+                outcome.reason instanceof Error
+                  ? outcome.reason
+                  : new Error(String(outcome.reason)),
+            });
+          } else if (outcome.value.kind === "refused") {
+            failedModels.push(model);
+            refusal ??= outcome.value.code;
+          } else {
+            sessions.push(outcome.value.session);
+          }
         }
-      }
 
-      if (sessions.length === 0) {
-        if (refusal) {
-          // A PR comment must not disclose secondary repositories from the environment.
-          await postRequiredComment(refusalComment(refusal, `${owner}/${repoName}`), refusal);
-          return { outcome: "skipped", skip_reason: refusal };
+        if (sessions.length === 0) {
+          if (refusal) {
+            // A PR comment must not disclose secondary repositories from the environment.
+            await postRequiredComment(refusalComment(refusal, `${owner}/${repoName}`), refusal);
+            return { outcome: "skipped", skip_reason: refusal };
+          }
+          throw firstError instanceof Error ? firstError : new Error(String(firstError));
         }
-        throw firstError instanceof Error ? firstError : new Error(String(firstError));
-      }
-      if (failedModels.length > 0) {
-        // Some reviewers started; say which did not so the PR never looks fully reviewed.
-        // Best effort: throwing here would make a redelivery restart the reviewers that ran.
-        const names = failedModels.map((model) => `\`${getModelDisplayName(model)}\``).join(", ");
-        const posted = await postIssueComment(
-          ghToken,
-          commentsUrl,
-          `I couldn't start the ${names} review, so ${sessions.length} of ${reviewerCount} reviews started. Request a review again to retry.`,
-          userAgent
-        );
-        if (!posted) {
-          log.error("session.reviewer_failure_notice_failed", {
-            ...meta,
-            failed_models: failedModels,
-          });
+        if (failedModels.length > 0) {
+          // Some reviewers started; say which did not so the PR never looks fully reviewed.
+          // Best effort: throwing here would make a redelivery restart the reviewers that ran.
+          const names = failedModels.map((model) => `\`${getModelDisplayName(model)}\``).join(", ");
+          const posted = await postIssueComment(
+            ghToken,
+            commentsUrl,
+            `I couldn't start the ${names} review, so ${sessions.length} of ${reviewerCount} reviews started. Request a review again to retry.`,
+            userAgent
+          );
+          if (!posted) {
+            log.error("session.reviewer_failure_notice_failed", {
+              ...meta,
+              failed_models: failedModels,
+            });
+          }
         }
+        return { outcome: "processed", sessions, handler_action: action };
       }
-      return { outcome: "processed", sessions, handler_action: action };
-    }
-  );
+    );
+  }
 }
 
 type RefusalCode = "not_member" | "target_team_missing_grant" | "team_archived";

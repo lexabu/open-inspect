@@ -17,6 +17,11 @@ vi.mock("../src/github-auth", async (importOriginal) => ({
   postReaction: vi.fn().mockResolvedValue(true),
   checkSenderPermission: vi.fn().mockResolvedValue({ hasPermission: true }),
   listPullRequestReviews: vi.fn().mockResolvedValue([]),
+  getPullRequestState: vi.fn().mockResolvedValue({
+    state: "open",
+    draft: false,
+    headSha: "a".repeat(40),
+  }),
 }));
 
 vi.mock("../src/utils/integration-config", () => ({
@@ -62,6 +67,7 @@ import {
   postReaction,
   checkSenderPermission,
   listPullRequestReviews,
+  getPullRequestState,
 } from "../src/github-auth";
 import { reviewCommentPayloadSchema } from "../src/payload-schemas";
 import { getGitHubConfig } from "../src/utils/integration-config";
@@ -107,7 +113,11 @@ function createMockEnv(): Env {
   });
 
   return {
-    GITHUB_KV: { get: vi.fn(), put: vi.fn() },
+    GITHUB_KV: {
+      get: vi.fn().mockResolvedValue(null),
+      put: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
+    },
     CONTROL_PLANE: { fetch: controlPlaneFetch },
     DEPLOYMENT_NAME: "test",
     DEFAULT_MODEL: "anthropic/claude-haiku-4-5",
@@ -162,8 +172,8 @@ const pullRequestOpenedPayload: PullRequestOpenedPayload = {
     title: "Add caching",
     body: "Adds Redis caching",
     user: { login: "alice" },
-    head: { ref: "feature/cache", sha: "abc123" },
-    base: { ref: "main" },
+    head: { ref: "feature/cache", sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    base: { ref: "main", sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
     draft: false,
   },
   repository: { id: 99, owner: { login: "acme" }, name: "widgets", private: false },
@@ -177,8 +187,8 @@ const reviewRequestedPayload: ReviewRequestedPayload = {
     title: "Add caching",
     body: "Adds Redis caching",
     user: { login: "alice" },
-    head: { ref: "feature/cache", sha: "abc123" },
-    base: { ref: "main" },
+    head: { ref: "feature/cache", sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    base: { ref: "main", sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
   },
   requested_reviewer: { login: "test-bot[bot]" },
   repository: { id: 99, owner: { login: "acme" }, name: "widgets", private: false },
@@ -206,8 +216,8 @@ const reviewCommentPayload: ReviewCommentPayload = {
   pull_request: {
     number: 42,
     title: "Add caching",
-    head: { ref: "feature/cache", sha: "abc123" },
-    base: { ref: "main" },
+    head: { ref: "feature/cache", sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    base: { ref: "main", sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
   },
   comment: {
     id: 200,
@@ -1205,7 +1215,7 @@ describe("handleReviewRequested", () => {
     expect(promptBody).not.toHaveProperty("authorId");
     expect(promptBody.content).toContain("Pull Request #42");
     expect(promptBody.content).toContain("acme/widgets");
-    expect(promptBody.content).toContain("gh pr diff 42");
+    expect(promptBody.content).toContain("git checkout --detach");
 
     // Verify logging
     expect(log.info).toHaveBeenCalledWith(
@@ -2467,7 +2477,7 @@ describe("handleReviewApproved", () => {
       body: "Adds Redis caching",
       user: { login: "alice" },
       head: { ref: "feature/cache", sha: HEAD },
-      base: { ref: "main" },
+      base: { ref: "main", sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
       draft: false,
       state: "open",
     },
@@ -2478,7 +2488,16 @@ describe("handleReviewApproved", () => {
   beforeEach(() => {
     vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, reviewOnApproval: true });
     vi.mocked(listPullRequestReviews).mockResolvedValue([]);
+    vi.mocked(getPullRequestState).mockResolvedValue({
+      state: "open",
+      draft: false,
+      headSha: HEAD,
+    });
   });
+
+  const claimKey = `review-claim:https://api.github.com/repos/acme/widgets/pulls/42@${HEAD}`;
+  const kv = (env: Env) =>
+    env.GITHUB_KV as unknown as Record<"get" | "put" | "delete", ReturnType<typeof vi.fn>>;
 
   afterEach(() => {
     vi.mocked(getGitHubConfig).mockResolvedValue(defaultConfig);
@@ -2607,5 +2626,96 @@ describe("handleReviewApproved", () => {
     );
 
     expect(result.outcome === "processed" && result.sessions).toHaveLength(2);
+  });
+
+  it("claims the commit while the review runs", async () => {
+    const env = createMockEnv();
+
+    await handleReviewApproved(env, createMockLogger(), approval, "trace-claim");
+
+    expect(kv(env).put).toHaveBeenCalledWith(claimKey, "1", expect.anything());
+    expect(kv(env).delete).not.toHaveBeenCalled();
+  });
+
+  it("skips a commit another review has claimed", async () => {
+    const env = createMockEnv();
+    kv(env).get.mockImplementation(async (key: string) => (key === claimKey ? "1" : null));
+
+    const result = await handleReviewApproved(env, createMockLogger(), approval, "trace-claimed");
+
+    expect(result).toEqual({ outcome: "skipped", skip_reason: "commit_review_claimed" });
+    expect(listPullRequestReviews).not.toHaveBeenCalled();
+  });
+
+  it("releases the claim when no review starts", async () => {
+    const env = createMockEnv();
+    mockControlPlaneResponse(env, /^https:\/\/internal\/sessions$/, () =>
+      Response.json({ error: "boom" }, { status: 500 })
+    );
+
+    await expect(
+      handleReviewApproved(env, createMockLogger(), approval, "trace-release")
+    ).rejects.toThrow();
+    expect(kv(env).delete).toHaveBeenCalledWith(claimKey);
+  });
+
+  it.each([
+    ["pr_not_open", { state: "closed", draft: false, headSha: "a".repeat(40) }],
+    ["draft_pr", { state: "open", draft: true, headSha: "a".repeat(40) }],
+    ["approval_not_on_head", { state: "open", draft: false, headSha: "d".repeat(40) }],
+  ])("rechecks the live PR and skips with %s", async (skipReason, live) => {
+    vi.mocked(getPullRequestState).mockResolvedValue(live);
+
+    const result = await handleReviewApproved(
+      createMockEnv(),
+      createMockLogger(),
+      approval,
+      "trace-live"
+    );
+
+    expect(result).toEqual({ outcome: "skipped", skip_reason: skipReason });
+  });
+
+  it("reviews when the live PR cannot be read", async () => {
+    vi.mocked(getPullRequestState).mockResolvedValue(null);
+    const log = createMockLogger();
+
+    const result = await handleReviewApproved(createMockEnv(), log, approval, "trace-live-null");
+
+    expect(result.outcome).toBe("processed");
+    expect(log.warn).toHaveBeenCalledWith(
+      "handler.pull_request_unreadable",
+      expect.objectContaining({ commit: HEAD })
+    );
+  });
+
+  it("ignores an approver outside the allowed trigger users", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({
+      ...defaultConfig,
+      reviewOnApproval: true,
+      allowedTriggerUsers: ["alice"],
+    });
+    const env = createMockEnv();
+
+    const result = await handleReviewApproved(env, createMockLogger(), approval, "trace-denied");
+
+    expect(result).toEqual({ outcome: "skipped", skip_reason: "sender_not_allowed" });
+    expect(kv(env).put).not.toHaveBeenCalled();
+  });
+
+  it("lets the opening review claim its commit so approval does not repeat it", async () => {
+    const env = createMockEnv();
+
+    await handlePullRequestOpened(
+      env,
+      createMockLogger(),
+      {
+        ...pullRequestOpenedPayload,
+        pull_request: { ...pullRequestOpenedPayload.pull_request, head: { ref: "f", sha: HEAD } },
+      },
+      "trace-open-claim"
+    );
+
+    expect(kv(env).put).toHaveBeenCalledWith(claimKey, "1", expect.anything());
   });
 });

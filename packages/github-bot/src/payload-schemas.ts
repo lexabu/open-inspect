@@ -25,6 +25,8 @@ const webhookNumberedObjectSchema = z.object({
   number: z.number().optional(),
 });
 
+const commitShaSchema = z.string().regex(/^[0-9a-f]{40}$/);
+
 const pullRequestSchema = z.object({
   number: z.number(),
   title: z.string(),
@@ -34,16 +36,22 @@ const pullRequestSchema = z.object({
   base: z.object({ ref: z.string() }),
 });
 
+/** A PR a review runs on: its head and base commits pin what is checked out and diffed. */
+const reviewedPullRequestSchema = pullRequestSchema.extend({
+  head: z.object({ ref: z.string(), sha: commitShaSchema }),
+  base: z.object({ ref: z.string(), sha: commitShaSchema }),
+});
+
 export const pullRequestOpenedPayloadSchema = z.object({
   action: z.literal("opened"),
-  pull_request: pullRequestSchema.extend({ draft: z.boolean() }),
+  pull_request: reviewedPullRequestSchema.extend({ draft: z.boolean() }),
   repository: repositorySchema,
   sender: githubSenderSchema,
 });
 
 export const reviewRequestedPayloadSchema = z.object({
   action: z.literal("review_requested"),
-  pull_request: pullRequestSchema,
+  pull_request: reviewedPullRequestSchema,
   requested_reviewer: githubUserSchema.nullable().optional(),
   repository: repositorySchema,
   sender: githubSenderSchema,
@@ -54,10 +62,10 @@ export const reviewSubmittedPayloadSchema = z.object({
   review: z.object({
     // Webhook review states are lowercase: approved, changes_requested, commented.
     state: z.string(),
-    commit_id: z.string().regex(/^[0-9a-f]{40}$/),
+    commit_id: commitShaSchema,
     user: githubUserSchema.extend({ type: z.string().optional() }),
   }),
-  pull_request: pullRequestSchema.extend({ draft: z.boolean(), state: z.string() }),
+  pull_request: reviewedPullRequestSchema.extend({ draft: z.boolean(), state: z.string() }),
   repository: repositorySchema,
   sender: githubSenderSchema,
 });

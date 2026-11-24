@@ -250,3 +250,35 @@ export async function listPullRequestReviews(
     return null;
   }
 }
+
+const pullRequestStateResponseSchema = z.object({
+  state: z.string(),
+  draft: z.boolean().optional(),
+  head: z.object({ sha: z.string() }),
+});
+
+/** A pull request's live state, draft flag and head commit, or null when unreadable. */
+export async function getPullRequestState(
+  token: string,
+  pullUrl: string,
+  userAgent: string = DEFAULT_APP_NAME
+): Promise<{ state: string; draft: boolean; headSha: string } | null> {
+  try {
+    const response = await fetch(pullUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": userAgent,
+      },
+      signal: AbortSignal.timeout(GITHUB_API_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) return null;
+    const parsed = pullRequestStateResponseSchema.safeParse(await response.json());
+    if (!parsed.success) return null;
+    const { state, draft = false, head } = parsed.data;
+    return { state, draft, headSha: head.sha };
+  } catch {
+    return null;
+  }
+}
