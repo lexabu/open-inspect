@@ -396,9 +396,13 @@ export class SessionMemoryAccessPolicy {
   ): Promise<SessionMemoryAccessDecision> {
     const authorizationFor = this.authorizationLoader();
     const repositories = partitions.filter((partition) => partition.type === "repository");
-    const repositoryDecision = principal.ownerTeamId
-      ? await this.teamRepositoryAccess(principal.ownerTeamId, repositories)
-      : await this.ownerRepositoryAccess(principal.userId, repositories, authorizationFor);
+    // A platform-held session has no owner whose grants could cover its repositories:
+    // the platform started it on them itself, and that is its access to their memory.
+    const repositoryDecision = principal.platformHeld
+      ? SESSION_ACCESS_GRANTED
+      : principal.ownerTeamId
+        ? await this.teamRepositoryAccess(principal.ownerTeamId, repositories)
+        : await this.ownerRepositoryAccess(principal.userId, repositories, authorizationFor);
     if (repositoryDecision.kind === "denied") return repositoryDecision;
     for (const partition of partitions) {
       if (partition.type === "personal") {

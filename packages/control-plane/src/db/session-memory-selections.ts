@@ -263,7 +263,7 @@ export class SessionMemorySelectionStore {
     const [sessions, repositories] = await this.db.batch([
       this.db
         .prepare(
-          `SELECT s.user_id, s.owner_team_id, s.harness, s.repo_owner, s.repo_name, s.environment_id,
+          `SELECT s.user_id, s.owner_team_id, s.platform_held, s.harness, s.repo_owner, s.repo_name, s.environment_id,
              s.parent_session_id,
              CASE WHEN COALESCE(p.include_personal_memories, 1) = 1 AND owner.suspended_at IS NULL
                THEN m.personal_owner_user_id END AS personal_owner_user_id,
@@ -284,6 +284,7 @@ export class SessionMemorySelectionStore {
       | {
           user_id: string | null;
           owner_team_id: string | null;
+          platform_held: number;
           harness: HarnessId | null;
           repo_owner: string | null;
           repo_name: string | null;
@@ -301,7 +302,11 @@ export class SessionMemorySelectionStore {
     }[];
     return {
       id: sessionId,
-      principal: { userId: session.user_id, ownerTeamId: session.owner_team_id },
+      principal: {
+        userId: session.user_id,
+        ownerTeamId: session.owner_team_id,
+        ...(session.platform_held === 1 ? { platformHeld: true } : {}),
+      },
       sources: {
         personalOwnerUserId: session.personal_owner_user_id,
         environmentId: session.environment_id,

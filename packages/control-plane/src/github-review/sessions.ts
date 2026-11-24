@@ -62,7 +62,7 @@ export function createGateSessions(
           null
         ),
         createSessionMemorySelector(ctx).select({
-          principal: { userId: null, ownerTeamId: null },
+          principal: { userId: null, ownerTeamId: null, platformHeld: true },
           repositories: members,
           environmentId: null,
           includePersonalMemories: false,
