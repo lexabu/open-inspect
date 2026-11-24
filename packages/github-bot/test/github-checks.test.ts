@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createCheckRun,
+  findSuiteReviewRun,
   getCompareDiff,
+  listOpenPullsWithHead,
   updateCheckRun,
   type GitHubRepoClient,
 } from "../src/github-checks";
@@ -13,6 +15,11 @@ const client: GitHubRepoClient = {
   repoUrl: "https://api.github.com/repos/acme/widgets",
 };
 const SHA = "a".repeat(40);
+const RUN = {
+  headSha: SHA,
+  startedAt: "2026-11-23T10:00:00.000Z",
+  externalId: "open-inspect:pr=42",
+};
 const originalFetch = globalThis.fetch;
 
 function lastRequest() {
@@ -33,7 +40,7 @@ describe("createCheckRun", () => {
   it("creates the AI Review check in progress on a commit", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValue(Response.json({ id: 31 }, { status: 201 }));
 
-    const id = await createCheckRun(client, SHA, "2026-11-23T10:00:00.000Z", {
+    const id = await createCheckRun(client, RUN, {
       status: "in_progress",
       output: { title: "AI review in progress", summary: "Reviewing." },
     });
@@ -53,6 +60,7 @@ describe("createCheckRun", () => {
       name: "AI Review",
       head_sha: SHA,
       started_at: "2026-11-23T10:00:00.000Z",
+      external_id: "open-inspect:pr=42",
       status: "in_progress",
       output: { title: "AI review in progress", summary: "Reviewing." },
     });
@@ -61,7 +69,7 @@ describe("createCheckRun", () => {
   it("offers the Review now button on a check that asks for a review", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValue(Response.json({ id: 32 }, { status: 201 }));
 
-    await createCheckRun(client, SHA, "2026-11-23T10:00:00.000Z", {
+    await createCheckRun(client, RUN, {
       status: "completed",
       conclusion: "action_required",
       output: { title: "Re-run the AI review before merging", summary: "No review." },
@@ -89,7 +97,7 @@ describe("createCheckRun", () => {
     vi.mocked(globalThis.fetch).mockImplementation(respond);
 
     expect(
-      await createCheckRun(client, SHA, "2026-11-23T10:00:00.000Z", {
+      await createCheckRun(client, RUN, {
         status: "in_progress",
         output: { title: "t", summary: "s" },
       })
@@ -129,6 +137,66 @@ describe("updateCheckRun", () => {
         output: { title: "t", summary: "s" },
       })
     ).toBe(false);
+  });
+});
+
+describe("findSuiteReviewRun", () => {
+  it("returns the external id of the suite's newest AI Review run", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      Response.json({
+        total_count: 2,
+        check_runs: [
+          { id: 5, external_id: "open-inspect:pr=41" },
+          { id: 9, external_id: "open-inspect:pr=42" },
+        ],
+      })
+    );
+
+    expect(await findSuiteReviewRun(client, 900)).toEqual({ externalId: "open-inspect:pr=42" });
+    expect(lastRequest().url).toBe(
+      "https://api.github.com/repos/acme/widgets/check-suites/900/check-runs?check_name=AI+Review&filter=latest"
+    );
+  });
+
+  it("tells a suite with no AI Review run from an unreadable one", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      Response.json({ total_count: 0, check_runs: [] })
+    );
+    expect(await findSuiteReviewRun(client, 900)).toEqual({ externalId: null });
+
+    vi.mocked(globalThis.fetch).mockResolvedValue(new Response("Forbidden", { status: 403 }));
+    expect(await findSuiteReviewRun(client, 900)).toBeNull();
+  });
+});
+
+describe("listOpenPullsWithHead", () => {
+  const pull = (number: number, state: string, sha: string) => ({ number, state, head: { sha } });
+
+  it("lists only open pull requests whose head is the commit", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      Response.json([
+        pull(42, "open", SHA),
+        pull(57, "open", SHA),
+        pull(58, "closed", SHA),
+        // Contains the commit, but has moved on to a later head.
+        pull(59, "open", "f".repeat(40)),
+      ])
+    );
+
+    expect(await listOpenPullsWithHead(client, SHA)).toEqual([42, 57]);
+    expect(lastRequest().url).toBe(
+      `https://api.github.com/repos/acme/widgets/commits/${SHA}/pulls?per_page=100`
+    );
+  });
+
+  it("returns null when the list may be incomplete or cannot be read", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      Response.json(Array.from({ length: 100 }, (_, index) => pull(index + 1, "open", SHA)))
+    );
+    expect(await listOpenPullsWithHead(client, SHA)).toBeNull();
+
+    vi.mocked(globalThis.fetch).mockResolvedValue(new Response("Not Found", { status: 404 }));
+    expect(await listOpenPullsWithHead(client, SHA)).toBeNull();
   });
 });
 
@@ -191,6 +259,7 @@ describe("getPullRequest", () => {
     const pull = {
       number: 42,
       state: "open",
+      draft: false,
       title: "Add caching",
       body: null,
       user: { login: "alice" },

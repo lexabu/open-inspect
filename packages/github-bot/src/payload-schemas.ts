@@ -69,8 +69,9 @@ export const pullRequestChangedPayloadSchema = z.object({
   sender: githubSenderSchema,
 });
 
-export const reviewSubmittedPayloadSchema = z.object({
-  action: z.literal("submitted"),
+/** A review of the bot's that was posted, or dismissed by a maintainer. */
+export const botReviewPayloadSchema = z.object({
+  action: z.enum(["submitted", "dismissed"]),
   review: z.object({
     commit_id: commitShaSchema,
     user: githubUserSchema,
@@ -87,10 +88,22 @@ export const checkRunPayloadSchema = z.object({
     name: z.string(),
     head_sha: commitShaSchema,
     app: z.object({ id: z.number() }),
-    // Empty for a commit that is on no open pull request of this repository.
-    pull_requests: z.array(z.object({ number: z.number() })),
+    // Set by the bot when it creates the run: the pull request the run belongs to.
+    external_id: z.string().nullish(),
   }),
   requested_action: z.object({ identifier: z.string() }).optional(),
+  repository: repositorySchema,
+  sender: githubSenderSchema,
+});
+
+/** "Re-run all checks" on a suite of this App's check runs. */
+export const checkSuitePayloadSchema = z.object({
+  action: z.literal("rerequested"),
+  check_suite: z.object({
+    id: z.number(),
+    head_sha: commitShaSchema,
+    app: z.object({ id: z.number() }),
+  }),
   repository: repositorySchema,
   sender: githubSenderSchema,
 });
@@ -164,8 +177,9 @@ export const webhookActionPayloadSchema = z
 export type PullRequestOpenedPayload = z.infer<typeof pullRequestOpenedPayloadSchema>;
 export type ReviewRequestedPayload = z.infer<typeof reviewRequestedPayloadSchema>;
 export type PullRequestChangedPayload = z.infer<typeof pullRequestChangedPayloadSchema>;
-export type ReviewSubmittedPayload = z.infer<typeof reviewSubmittedPayloadSchema>;
+export type BotReviewPayload = z.infer<typeof botReviewPayloadSchema>;
 export type CheckRunPayload = z.infer<typeof checkRunPayloadSchema>;
+export type CheckSuitePayload = z.infer<typeof checkSuitePayloadSchema>;
 export type IssueCommentPayload = z.infer<typeof issueCommentPayloadSchema>;
 export type ReviewCommentPayload = z.infer<typeof reviewCommentPayloadSchema>;
 export type WebhookSummaryPayload = z.infer<typeof webhookSummaryPayloadSchema>;

@@ -272,6 +272,7 @@ export async function listPullRequestReviews(
 const pullRequestResponseSchema = z.object({
   number: z.number(),
   state: z.string(),
+  draft: z.boolean(),
   title: z.string(),
   body: z.string().nullable(),
   user: z.object({ login: z.string() }),

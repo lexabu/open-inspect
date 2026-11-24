@@ -217,7 +217,7 @@ JSON
 
    ${reviewEventGuidance}${
      runMarker
-       ? `\n   Put this line in the review body exactly as written, on a line of its own:\n   ${runMarker}`
+       ? `\n   Put this line in the review body exactly as written, on a line of its own, above any\n   verdict marker line. The AI Review check counts only a review that carries it:\n   ${runMarker}`
        : ""
    }
 

@@ -108,6 +108,7 @@ function mockMint() {
     return Response.json({
       token: `scoped-token-${++count}`,
       expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      permissions: { contents: "write" },
     });
   });
 }
@@ -293,6 +294,7 @@ describe("session repository installation tokens over D1 and KV", () => {
         return Response.json({
           token: "replacement-token",
           expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+          permissions: { contents: "write" },
         });
       }
       expect(input).toBe("https://api.github.com/repos/acme/repo-12/git/ref/heads/main");

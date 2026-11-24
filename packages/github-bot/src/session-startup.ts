@@ -161,7 +161,12 @@ export async function startSession(
     reactionPath: string;
     /** `!model` / `!reasoning` flags parsed from the triggering comment, if any. */
     inlineFlags?: ParseInlinePromptFlagsResult;
-    buildPrompt: (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string;
+    /** `reviewerIndex` is the position of the session among the reviewers being started. */
+    buildPrompt: (
+      config: ResolvedGitHubConfig,
+      reviewer: ReviewerContext | null,
+      reviewerIndex: number
+    ) => string;
   }
 ): Promise<HandlerResult> {
   const { repository: repo, sender, pullNumber, action } = params;
@@ -254,7 +259,10 @@ export async function startSession(
           traceId,
         });
 
-        const launch = async (selection: ModelSelection): Promise<LaunchOutcome> => {
+        const launch = async (
+          selection: ModelSelection,
+          reviewerIndex: number
+        ): Promise<LaunchOutcome> => {
           const modelName = getModelDisplayName(selection.model);
           const creation = await createSession(env, traceId, {
             target,
@@ -286,7 +294,8 @@ export async function startSession(
 
           const prompt = params.buildPrompt(
             config,
-            reviewerCount > 1 ? { modelName, reviewerCount } : null
+            reviewerCount > 1 ? { modelName, reviewerCount } : null,
+            reviewerIndex
           );
           const messageId = await sendPrompt(env, traceId, sessionId, {
             content: prompt,

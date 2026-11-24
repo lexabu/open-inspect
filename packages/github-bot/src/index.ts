@@ -14,13 +14,14 @@ import { normalizeGitHubEvent } from "@open-inspect/shared/triggers";
 import { signedControlPlaneFetch } from "./internal-auth";
 import {
   baseChangePayloadSchema,
+  botReviewPayloadSchema,
   checkRunPayloadSchema,
+  checkSuitePayloadSchema,
   issueCommentPayloadSchema,
   pullRequestOpenedPayloadSchema,
   pullRequestChangedPayloadSchema,
   reviewCommentPayloadSchema,
   reviewRequestedPayloadSchema,
-  reviewSubmittedPayloadSchema,
   webhookActionPayloadSchema,
   webhookSummaryPayloadSchema,
   type WebhookSummaryPayload,
@@ -29,6 +30,7 @@ import {
   handlePullRequestOpened,
   handleReviewRequested,
   handleCheckRunReviewRequested,
+  handleCheckSuiteRerequested,
   handleIssueComment,
   handleReviewComment,
   isReviewRequestedForBot,
@@ -37,7 +39,7 @@ import {
 } from "./handlers";
 import {
   concludeStuckCheck,
-  handleBotReviewSubmitted,
+  handleBotReviewChanged,
   handlePullRequestChanged,
 } from "./ai-review-check";
 import { createKvCacheStore } from "@open-inspect/shared/cache-store";
@@ -192,6 +194,8 @@ const COMMENTED_SKIP_REASONS: ReadonlySet<string> = new Set([
   "override_missing_reason",
   "override_by_author",
   "override_not_authorized",
+  "override_wrong_commit",
+  "override_shared_head",
 ]);
 
 async function handleWebhook(
@@ -370,13 +374,24 @@ function dispatchHandler(
         skip_reason: "unsupported_action",
       });
     case "pull_request_review":
-      if (p.action === "submitted") {
+      // Posting concludes the AI Review attempt; a dismissal takes its verdict back.
+      if (p.action === "submitted" || p.action === "dismissed") {
         if (!isReviewByBot(payload, env.GITHUB_BOT_USERNAME)) {
           return Promise.resolve({ outcome: "skipped", skip_reason: "review_not_by_bot" });
         }
-        const parsed = reviewSubmittedPayloadSchema.safeParse(payload);
-        if (!parsed.success) throw new Error("Malformed pull_request_review submitted payload");
-        return handleBotReviewSubmitted(env, log, parsed.data, traceId);
+        const parsed = botReviewPayloadSchema.safeParse(payload);
+        if (!parsed.success) throw new Error(`Malformed pull_request_review ${p.action} payload`);
+        return handleBotReviewChanged(env, log, parsed.data, traceId);
+      }
+      return Promise.resolve({
+        outcome: "skipped",
+        skip_reason: "unsupported_action",
+      });
+    case "check_suite":
+      if (p.action === "rerequested") {
+        const parsed = checkSuitePayloadSchema.safeParse(payload);
+        if (!parsed.success) throw new Error("Malformed check_suite rerequested payload");
+        return handleCheckSuiteRerequested(env, log, parsed.data, traceId);
       }
       return Promise.resolve({
         outcome: "skipped",

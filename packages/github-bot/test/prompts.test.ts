@@ -74,14 +74,12 @@ describe("buildCodeReviewPrompt", () => {
     const preMerge = buildCodeReviewPrompt({ ...baseParams, preMerge: true });
     expect(preMerge).toContain("## Pre-merge Review");
     expect(preMerge).toContain(`asked for again on commit \`${baseParams.headSha}\``);
-    expect(preMerge).not.toContain("review-run=");
+    expect(preMerge).not.toContain("open-inspect:review");
 
-    const marked = buildCodeReviewPrompt({
-      ...baseParams,
-      runMarker: "<!-- open-inspect:review-run=abc -->",
-    });
+    const runMarker = "<!-- open-inspect:review attempt=abc reviewer=def -->";
+    const marked = buildCodeReviewPrompt({ ...baseParams, runMarker });
     expect(marked).toContain(
-      "Put this line in the review body exactly as written, on a line of its own:\n   <!-- open-inspect:review-run=abc -->"
+      `The AI Review check counts only a review that carries it:\n   ${runMarker}`
     );
   });
 

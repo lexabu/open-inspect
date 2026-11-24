@@ -218,9 +218,16 @@ describe("github-app utilities", () => {
       const { privateKeyPem } = await generateTestKeyPair();
       const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
       fetchMock.mockResolvedValue(
-        new Response(JSON.stringify({ token: "fresh-token", expires_at: expiresAt }), {
-          status: 201,
-        })
+        new Response(
+          JSON.stringify({
+            token: "fresh-token",
+            expires_at: expiresAt,
+            permissions: { contents: "write" },
+          }),
+          {
+            status: 201,
+          }
+        )
       );
 
       const config = {
@@ -318,9 +325,16 @@ describe("github-app utilities", () => {
       const { privateKeyPem } = await generateTestKeyPair();
       const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
       fetchMock.mockResolvedValue(
-        new Response(JSON.stringify({ token: "fresh-token", expires_at: expiresAt }), {
-          status: 201,
-        })
+        new Response(
+          JSON.stringify({
+            token: "fresh-token",
+            expires_at: expiresAt,
+            permissions: { contents: "write" },
+          }),
+          {
+            status: 201,
+          }
+        )
       );
 
       const result = await getCachedInstallationTokenWithExpiry(
@@ -341,9 +355,16 @@ describe("github-app utilities", () => {
       const { privateKeyPem } = await generateTestKeyPair();
       const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
       fetchMock.mockResolvedValue(
-        new Response(JSON.stringify({ token: "escaped-key-token", expires_at: expiresAt }), {
-          status: 201,
-        })
+        new Response(
+          JSON.stringify({
+            token: "escaped-key-token",
+            expires_at: expiresAt,
+            permissions: { contents: "write" },
+          }),
+          {
+            status: 201,
+          }
+        )
       );
 
       const result = await getCachedInstallationTokenWithExpiry(
@@ -401,9 +422,16 @@ describe("github-app utilities", () => {
       const fetchMock = vi.spyOn(globalThis, "fetch");
       const { privateKeyPem } = await generateTestKeyPair();
       fetchMock.mockResolvedValue(
-        new Response(JSON.stringify({ token: "fresh-token", expires_at: "not-a-date" }), {
-          status: 201,
-        })
+        new Response(
+          JSON.stringify({
+            token: "fresh-token",
+            expires_at: "not-a-date",
+            permissions: { contents: "write" },
+          }),
+          {
+            status: 201,
+          }
+        )
       );
 
       await expect(

@@ -1,3 +1,4 @@
+import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { cleanD1Tables } from "./cleanup";
 import { serviceFetch } from "./helpers";
@@ -48,6 +49,31 @@ describe("GitHub integration settings harness", () => {
     expect((await put(repoEndpoint, { mergeGate: "required" })).status).toBe(200);
     expect(await resolved()).toBe("required");
     expect((await put(repoEndpoint, { mergeGate: "blocking" })).status).toBe(400);
+    expect((await put(repoEndpoint, { reviewOnApproval: true })).status).toBe(400);
+  });
+
+  it("reads rows that still carry the removed reviewOnApproval setting, and keeps rejecting it on write", async () => {
+    const insert = (table: string, columns: string, values: unknown[]) =>
+      env.DB.prepare(
+        `INSERT INTO ${table} (${columns}, created_at, updated_at) VALUES (${values.map(() => "?").join(", ")}, 1, 1)`
+      )
+        .bind(...values)
+        .run();
+    await insert("integration_settings", "integration_id, settings", [
+      "github",
+      JSON.stringify({ defaults: { reviewOnApproval: true, commentOnlyReviews: true } }),
+    ]);
+    await insert("integration_repo_settings", "integration_id, repo, settings", [
+      "github",
+      "acme/widgets",
+      JSON.stringify({ reviewOnApproval: false, mergeGate: "shadow" }),
+    ]);
+
+    const res = await serviceFetch(resolvedEndpoint, { service: "github-bot" });
+    expect(res.status).toBe(200);
+    const { config } = await res.json<{ config: Record<string, unknown> }>();
+    expect(config).toMatchObject({ commentOnlyReviews: true, mergeGate: "shadow" });
+    expect(config).not.toHaveProperty("reviewOnApproval");
     expect((await put(repoEndpoint, { reviewOnApproval: true })).status).toBe(400);
   });
 

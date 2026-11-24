@@ -1,11 +1,12 @@
 import { vi } from "vitest";
 import type {
+  BotReviewPayload,
   CheckRunPayload,
+  CheckSuitePayload,
   Env,
   IssueCommentPayload,
   PullRequestChangedPayload,
   PullRequestOpenedPayload,
-  ReviewSubmittedPayload,
 } from "../src/types";
 import type { Logger } from "../src/logger";
 import type { ResolvedGitHubConfig } from "../src/utils/integration-config";
@@ -18,7 +19,13 @@ import {
   postReaction,
   type PullRequestReview,
 } from "../src/github-auth";
-import { createCheckRun, getCompareDiff, updateCheckRun } from "../src/github-checks";
+import {
+  createCheckRun,
+  findSuiteReviewRun,
+  getCompareDiff,
+  listOpenPullsWithHead,
+  updateCheckRun,
+} from "../src/github-checks";
 import { getGitHubConfig } from "../src/utils/integration-config";
 
 /**
@@ -30,12 +37,17 @@ export const BASE = "b".repeat(40);
 export const OLD_HEAD = "c".repeat(40);
 export const BOT = "test-bot[bot]";
 export const VERDICT_KEY = "ai-review:verdict:acme/widgets#42";
-export const RUN_KEY = "ai-review:run:acme/widgets#42";
-export const TOKEN_A = "token-a";
-export const TOKEN_B = "token-b";
-export const RUN_DIFF_HASH = "d".repeat(64);
-export const marker = (token: string) => `<!-- open-inspect:review-run=${token} -->`;
-export const RUN_START = "2026-11-23T10:00:00.000Z";
+export const ATTEMPT_KEY = "ai-review:attempt:acme/widgets#42";
+export const ATTEMPT_ID = "11111111-1111-4111-8111-111111111111";
+export const KEY_A = "aaaaaaaa-0000-4000-8000-000000000001";
+export const KEY_B = "bbbbbbbb-0000-4000-8000-000000000002";
+export const DIFF_HASH = "d".repeat(64);
+export const HAIKU = "anthropic/claude-haiku-4-5";
+export const SOL = "openai/gpt-5.6-sol";
+export const marker = (reviewerKey: string, attemptId = ATTEMPT_ID) =>
+  `<!-- open-inspect:review attempt=${attemptId} reviewer=${reviewerKey} -->`;
+/** Long enough ago that an attempt started then counts as stuck. */
+export const LONG_AGO = "2020-01-01T00:00:00.000Z";
 
 export const baseConfig: ResolvedGitHubConfig = {
   model: "anthropic/claude-haiku-4-5",
@@ -52,8 +64,12 @@ export const baseConfig: ResolvedGitHubConfig = {
 };
 
 export const twoReviewers = [
-  { model: "anthropic/claude-haiku-4-5", harness: "opencode" as const },
-  { model: "openai/gpt-5.6-sol", harness: "opencode" as const },
+  { model: HAIKU, harness: "opencode" as const },
+  { model: SOL, harness: "opencode" as const },
+];
+export const twoReviewerKeys = [
+  { key: KEY_A, model: HAIKU },
+  { key: KEY_B, model: SOL },
 ];
 
 export const repository = { id: 99, owner: { login: "acme" }, name: "widgets", private: false };
@@ -82,7 +98,10 @@ export const synchronized: PullRequestChangedPayload = {
   sender: alice,
 };
 
-export const botReview: ReviewSubmittedPayload = {
+/** The pull request as GitHub returns it now. */
+export const livePull = { ...pullRequest, state: "open", draft: false };
+
+export const botReview: BotReviewPayload = {
   action: "submitted",
   review: { commit_id: HEAD, user: { login: BOT } },
   pull_request: pullRequest,
@@ -96,8 +115,15 @@ export const rerequested: CheckRunPayload = {
     name: "AI Review",
     head_sha: HEAD,
     app: { id: 12345 },
-    pull_requests: [{ number: 42 }],
+    external_id: "open-inspect:pr=42",
   },
+  repository,
+  sender: bob,
+};
+
+export const suiteRerequested: CheckSuitePayload = {
+  action: "rerequested",
+  check_suite: { id: 900, head_sha: HEAD, app: { id: 12345 } },
   repository,
   sender: bob,
 };
@@ -117,7 +143,7 @@ export function review(overrides: Partial<PullRequestReview> = {}): PullRequestR
     login: BOT,
     commitId: HEAD,
     state: "COMMENTED",
-    body: `Looks good.\n${marker(TOKEN_A)}`,
+    body: `Looks good.\n${marker(KEY_A)}`,
     url: "https://github.test/review/1",
     submittedAt: "2026-11-23T10:05:00.000Z",
     ...overrides,
@@ -195,22 +221,42 @@ export function createEnv() {
     controlPlaneFetch.mock.calls.filter(([url]) => url === "https://internal/sessions").length;
   const json = (key: string) => (kv.has(key) ? JSON.parse(String(kv.get(key))) : null);
   const seed = (key: string, value: unknown) => kv.set(key, JSON.stringify(value));
-  return { env, controlPlaneFetch, sessionsStarted, json, seed };
+  const remove = (key: string) => kv.delete(key);
+  return { env, controlPlaneFetch, sessionsStarted, json, seed, remove };
 }
 
 export function useConfig(overrides: Partial<ResolvedGitHubConfig> = {}) {
   vi.mocked(getGitHubConfig).mockResolvedValue({ ...baseConfig, ...overrides });
 }
 
-/** A review in flight on the head, as `startCheckedReview` records it. */
-export function run(overrides: object = {}) {
+/** A review attempt on the head with its check run posted, as `startCheckedReview` records it. */
+export function attempt(overrides: object = {}) {
+  return {
+    id: ATTEMPT_ID,
+    prNumber: 42,
+    headSha: HEAD,
+    baseSha: BASE,
+    baseRef: "main",
+    startedAt: LONG_AGO,
+    reviewers: [{ key: KEY_A, model: HAIKU }],
+    checkRunId: 7,
+    diffHash: DIFF_HASH,
+    concludedAt: null,
+    ...overrides,
+  };
+}
+
+/** A verdict reached by `attempt()` on the head. */
+export function verdict(overrides: object = {}) {
   return {
     sha: HEAD,
-    startedAt: RUN_START,
-    checkRunId: 7,
-    tokens: [TOKEN_A],
-    expected: 1,
-    diffHash: RUN_DIFF_HASH,
+    reviewedSha: HEAD,
+    baseRef: "main",
+    baseSha: BASE,
+    diffHash: DIFF_HASH,
+    approved: true,
+    summary: "- Claude Haiku 4.5: approve ([review](https://github.test/review/1))",
+    attemptId: ATTEMPT_ID,
     ...overrides,
   };
 }
@@ -225,7 +271,9 @@ export function resetGateMocks(): void {
   vi.mocked(postIssueComment).mockResolvedValue(true);
   vi.mocked(checkSenderPermission).mockResolvedValue({ hasPermission: true });
   vi.mocked(listPullRequestReviews).mockResolvedValue([]);
-  vi.mocked(getPullRequest).mockResolvedValue({ ...pullRequest, state: "open" });
+  vi.mocked(getPullRequest).mockResolvedValue(livePull);
+  vi.mocked(listOpenPullsWithHead).mockResolvedValue([42]);
+  vi.mocked(findSuiteReviewRun).mockResolvedValue({ externalId: "open-inspect:pr=42" });
   vi.mocked(createCheckRun).mockResolvedValue(7);
   vi.mocked(updateCheckRun).mockResolvedValue(true);
   vi.mocked(getCompareDiff).mockResolvedValue("diff --git a/x b/x\n+one\n");

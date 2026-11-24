@@ -1,5 +1,6 @@
 import type {
   CheckRunPayload,
+  CheckSuitePayload,
   Env,
   PullRequestOpenedPayload,
   ReviewRequestedPayload,
@@ -17,13 +18,9 @@ import {
 } from "@open-inspect/shared/github-mention";
 import { parseInlinePromptFlags } from "@open-inspect/shared/inline-prompt-flags";
 import { startSession, type HandlerResult } from "./session-startup";
-import {
-  handleOverrideComment,
-  mergeGateEnabled,
-  parseOverrideCommand,
-  readRerunTarget,
-  startCheckedReview,
-} from "./ai-review-check";
+import { readRerunTarget, readSuiteReviewPull, startCheckedReview } from "./ai-review-check";
+import { mergeGateEnabled, pullNumberFromExternalId } from "./ai-review-gate";
+import { handleOverrideComment, parseOverrideCommand } from "./ai-review-override";
 import { AI_REVIEW_CHECK_NAME, REVIEW_ACTION_IDENTIFIER } from "./github-checks";
 
 export type { HandlerResult } from "./session-startup";
@@ -45,9 +42,10 @@ function reviewPromptFor(
   repo: Pick<ReviewRequestedPayload["repository"], "owner" | "name" | "private">,
   pr: ReviewRequestedPayload["pull_request"],
   preMerge: boolean,
-  runMarker: (() => string) | null
-): (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string {
-  return (config, reviewer) =>
+  /** The AI Review marker of each reviewer, by position; null where the gate is off. */
+  markers: string[] | null
+): (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null, index: number) => string {
+  return (config, reviewer, index) =>
     buildCodeReviewPrompt({
       owner: repo.owner.login,
       repo: repo.name,
@@ -65,8 +63,15 @@ function reviewPromptFor(
       reviewer,
       commentOnlyReviews: config.commentOnlyReviews,
       preMerge,
-      runMarker: runMarker?.() ?? null,
+      runMarker: markers && markerFor(markers, index),
     });
+}
+
+function markerFor(markers: string[], index: number): string {
+  const marker = markers[index];
+  // The gate and the session start each read the reviewer list; they must agree.
+  if (marker === undefined) throw new Error(`No AI Review marker for reviewer ${index + 1}`);
+  return marker;
 }
 
 /** Whether a submitted review is the bot's own; other reviews are not parsed further. */
@@ -95,9 +100,9 @@ export async function handleReviewRequested(
     env,
     log,
     traceId,
-    { repository: repo, pullNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha },
+    { repository: repo, pullNumber: pr.number, headSha: pr.head.sha, base: pr.base },
     "keep",
-    (runMarker) =>
+    (markers) =>
       startSession(env, log, traceId, {
         repository: repo,
         sender,
@@ -105,7 +110,7 @@ export async function handleReviewRequested(
         title: `GitHub: Review PR #${pr.number}`,
         action: "review",
         reactionPath: `issues/${pr.number}`,
-        buildPrompt: reviewPromptFor(env, repo, pr, false, runMarker),
+        buildPrompt: reviewPromptFor(env, repo, pr, false, markers),
       })
   );
 }
@@ -120,7 +125,7 @@ export async function handleCheckRunReviewRequested(
   payload: CheckRunPayload,
   traceId: string
 ): Promise<HandlerResult> {
-  const { check_run: run, repository: repo, sender } = payload;
+  const { check_run: run, repository, sender } = payload;
   if (run.name !== AI_REVIEW_CHECK_NAME || String(run.app.id) !== env.GITHUB_APP_ID) {
     return { outcome: "skipped", skip_reason: "not_ai_review_check" };
   }
@@ -130,30 +135,67 @@ export async function handleCheckRunReviewRequested(
   ) {
     return { outcome: "skipped", skip_reason: "unsupported_check_action" };
   }
-  const pullNumber = run.pull_requests[0]?.number;
-  if (pullNumber === undefined) {
+  // GitHub's own `pull_requests` list is empty for forks and stale heads; the bot's
+  // `external_id` always names the pull request.
+  const pullNumber = pullNumberFromExternalId(run.external_id);
+  if (pullNumber === null) {
     return { outcome: "skipped", skip_reason: "check_without_pull_request" };
   }
+  const target = { repository, sender, pullNumber, headSha: run.head_sha };
+  return rerunReview(env, log, traceId, target);
+}
 
+/** "Re-run all checks" on a suite of this App's checks that holds the AI Review run. */
+export async function handleCheckSuiteRerequested(
+  env: Env,
+  log: Logger,
+  payload: CheckSuitePayload,
+  traceId: string
+): Promise<HandlerResult> {
+  const { check_suite: suite, repository, sender } = payload;
+  if (String(suite.app.id) !== env.GITHUB_APP_ID) {
+    return { outcome: "skipped", skip_reason: "not_ai_review_check" };
+  }
+  const found = await readSuiteReviewPull(env, log, repository, suite.id);
+  if (!found.gate) return { outcome: "skipped", skip_reason: "merge_gate_off" };
+  if (found.pullNumber === null) {
+    return { outcome: "skipped", skip_reason: "check_without_pull_request" };
+  }
+  const target = { repository, sender, pullNumber: found.pullNumber, headSha: suite.head_sha };
+  return rerunReview(env, log, traceId, target);
+}
+
+async function rerunReview(
+  env: Env,
+  log: Logger,
+  traceId: string,
+  target: {
+    repository: CheckRunPayload["repository"];
+    sender: CheckRunPayload["sender"];
+    pullNumber: number;
+    headSha: string;
+  }
+): Promise<HandlerResult> {
+  const { repository: repo, sender, pullNumber, headSha } = target;
   // The click may come long after the check was posted; act on the live pull request.
-  const target = await readRerunTarget(env, log, repo, pullNumber);
-  if (target === null) return { outcome: "skipped", skip_reason: "merge_gate_off" };
-  const { pr, reviewRunning } = target;
+  const pr = await readRerunTarget(env, log, repo, pullNumber);
+  if (pr === null) return { outcome: "skipped", skip_reason: "merge_gate_off" };
   if (pr.state !== "open") return { outcome: "skipped", skip_reason: "pr_not_open" };
-  if (pr.head.sha !== run.head_sha) {
+  if (pr.draft) return { outcome: "skipped", skip_reason: "draft_pr" };
+  if (pr.head.sha !== headSha) {
     log.debug("handler.check_not_on_head", { trace_id: traceId, pull_number: pullNumber });
     return { outcome: "skipped", skip_reason: "check_not_on_head" };
   }
-  // A second click must not start a second set of reviewers.
-  if (reviewRunning) return { outcome: "skipped", skip_reason: "review_in_progress" };
 
+  // A suite re-run and a run re-run of one click, or two clicks, start one attempt:
+  // `startCheckedReview` skips a head that already has one running.
   return startCheckedReview(
     env,
     log,
     traceId,
-    { repository: repo, pullNumber, headSha: run.head_sha, baseSha: pr.base.sha },
+    { repository: repo, pullNumber, headSha, base: pr.base },
     "keep",
-    (runMarker) =>
+    (markers) =>
       startSession(env, log, traceId, {
         repository: repo,
         sender,
@@ -161,7 +203,7 @@ export async function handleCheckRunReviewRequested(
         title: `GitHub: Review PR #${pullNumber}`,
         action: "review",
         reactionPath: `issues/${pullNumber}`,
-        buildPrompt: reviewPromptFor(env, repo, pr, true, runMarker),
+        buildPrompt: reviewPromptFor(env, repo, pr, true, markers),
       })
   );
 }
@@ -188,9 +230,9 @@ export async function handlePullRequestOpened(
     env,
     log,
     traceId,
-    { repository: repo, pullNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha },
+    { repository: repo, pullNumber: pr.number, headSha: pr.head.sha, base: pr.base },
     "needs_review",
-    (runMarker) =>
+    (markers) =>
       startSession(env, log, traceId, {
         repository: repo,
         sender,
@@ -198,7 +240,7 @@ export async function handlePullRequestOpened(
         title: `GitHub: Review PR #${pr.number}`,
         action: "auto_review",
         reactionPath: `issues/${pr.number}`,
-        buildPrompt: reviewPromptFor(env, repo, pr, false, runMarker),
+        buildPrompt: reviewPromptFor(env, repo, pr, false, markers),
       })
   );
 }
@@ -230,19 +272,21 @@ export async function handleIssueComment(
     return { outcome: "skipped", skip_reason: "self_comment" };
   }
 
-  const text = stripBotMention(comment.body, env.GITHUB_BOT_USERNAME);
-  // An override is a command to the merge gate, never a prompt for a session.
-  const override = parseOverrideCommand(text);
-  if (override) {
-    return handleOverrideComment(env, log, traceId, {
+  // An override is a command to the merge gate, never a prompt; where the gate is off
+  // the comment is an ordinary mention.
+  const command = parseOverrideCommand(comment.body, env.GITHUB_BOT_USERNAME);
+  if (command) {
+    const overridden = await handleOverrideComment(env, log, traceId, {
       repository: repo,
       pullNumber: issue.number,
       commentId: comment.id,
       sender,
-      reason: override.reason,
+      command,
     });
+    if (overridden !== null) return overridden;
   }
 
+  const text = stripBotMention(comment.body, env.GITHUB_BOT_USERNAME);
   const inlineFlags = parseInlinePromptFlags(text);
   return startSession(env, log, traceId, {
     repository: repo,

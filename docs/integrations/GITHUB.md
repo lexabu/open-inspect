@@ -93,8 +93,74 @@ repository.
 | The bot's review lands                      | Once every configured reviewer has posted on the commit: success if all approve, otherwise not approved.     |
 | New commits                                 | No review runs. The check asks for one: "Re-run the AI review before merging", with a **Review now** button. |
 | Base-branch update, PR's own diff unchanged | The last verdict carries forward to the new head.                                                            |
-| Base branch changed to another branch       | The verdict stays only if the diff is the one it covers; otherwise the check asks for a review.              |
-| **Re-run** or **Review now**                | Reviews the head commit for whoever clicked, if they may trigger the bot.                                    |
+| Base branch changed to another branch       | The verdict is dropped and the check asks for a review.                                                      |
+| The bot's review is dismissed               | The check is concluded again without that reviewer's approval.                                               |
+| **Re-run**, **Re-run all**, **Review now**  | Reviews the head commit for whoever clicked, if they may trigger the bot. Draft PRs are skipped.             |
+
+In `shadow` mode a missing or unfavourable verdict concludes `neutral`, which never blocks a merge.
+In `required` mode it concludes `failure`, or `action_required` when no review covers the head, so
+the check can be made a required status check.
+
+**What counts as an approval.** Before a review starts, the bot records an attempt for that pull
+request and commit and gives each reviewer session a one-time marker to put in its review. Only the
+first review carrying each reviewer's marker counts, so a review the bot posts for a comment request
+(for example "approve this PR") never passes the check. A reviewer approves with an `APPROVED`
+review, or with a comment-only review whose last line is the approve marker. A review that requests
+changes never approves.
+
+A check run belongs to a commit, not to a pull request. When two open pull requests have the same
+head commit, the check asks for a review instead of passing, and a verdict is never carried forward
+or overridden there.
+
+**Carry-forward.** A new head keeps the last verdict when the pull request's diff against its base
+is the one that was reviewed: same files, same hunks and context, same binary files and file modes.
+Only the positions of hunks and the blob ids of text files are ignored, since a base-branch update
+moves them.
+
+**Override.** Someone with write access who is not the pull request's author can pass the head's
+check with a PR comment on a line of its own that names the head commit (seven or more characters)
+and gives a reason. Both are recorded on the check:
+
+```text
+@my-app override 3f9c2ab reviewer misread the migration; verified by hand
+```
+
+The override applies only if the commit it names is still the head; otherwise the bot replies with
+the current head. A comment that mentions the bot and "override" in any other form is an ordinary
+request to the bot. A new review of the same commit replaces the override.
+
+**If a review never posts.** A review session that ends without posting sends nothing to GitHub. The
+next webhook for that pull request (a comment, a push, a review) concludes a check that has been in
+progress for more than 30 minutes as unfinished, and it can then be re-run. If the review posts
+after all, the check is concluded from it.
+
+**Permissions.** The check needs the App permission **Checks: Read and write**. GitHub sends an App
+with that permission the **Check run** and **Check suite** events for its own checks, including
+**Re-run** and **Review now**, without a separate event subscription. Only the GitHub bot's own
+token writes checks: tokens issued to sandboxes and sessions are limited to reading checks and
+commit statuses, so a session cannot post or change a merge-gate result.
+
+**Rollout.**
+
+- Before switching a repository from `shadow` to `required`, re-run the check on its open pull
+  requests. A check concluded in shadow mode is `neutral`, which GitHub accepts for a required
+  check; it only becomes `failure` or `action_required` when it is concluded again.
+- The earlier `reviewOnApproval` setting is gone. Stored settings that still hold it are read as if
+  it were absent, for one release; migration `0098` removes it. Before rolling back to a version
+  without `mergeGate`, remove `mergeGate` from the stored GitHub settings: that version rejects
+  settings it does not know.
+
+------------------------------------------- |
+------------------------------------------------------------------------------------------------------------
+
+| | PR opened, or marked ready for review | The opening review runs and the check is in progress. |
+| The bot's review lands | Once every configured reviewer has posted on the commit: success if all
+approve, otherwise not approved. | | New commits | No review runs. The check asks for one: "Re-run
+the AI review before merging", with a **Review now** button. | | Base-branch update, PR's own diff
+unchanged | The last verdict carries forward to the new head. | | Base branch changed to another
+branch | The verdict stays only if the diff is the one it covers; otherwise the check asks for a
+review. | | **Re-run** or **Review now** | Reviews the head commit for whoever clicked, if they may
+trigger the bot. |
 
 In `shadow` mode a missing or unfavourable verdict concludes `neutral`, which never blocks a merge.
 In `required` mode it concludes `failure`, or `action_required` when no review covers the head, so
