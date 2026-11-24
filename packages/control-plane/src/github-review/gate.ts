@@ -174,39 +174,41 @@ export class ReviewGate {
         ? `The AI review did not start (${request.detail ?? "unknown reason"}).`
         : "No AI review covers this diff.");
     await store.ensureHead(head, note, this.deps.now());
+    let carried = false;
     if (request.change === "review_not_started") {
       await store.setNote(head, note, this.deps.now());
     } else if (request.change === "head") {
-      await this.carryForward(github, head, pull);
+      carried = await this.carryForward(github, head, pull);
     }
     await this.reconcileDirty(head);
 
     // What the head rests on now, which a review started meanwhile may have changed.
     const evidence = (await store.getHead(head))?.evidence.kind;
-    if (evidence === "carried") return { outcome: "carried_forward" };
     if (evidence === "review" || evidence === "override") {
       return { outcome: "skipped", reason: "already_covered" };
     }
-    return { outcome: "needs_review" };
+    // A verdict the head carried before and that no longer applies is not one it carries.
+    return { outcome: carried && evidence === "carried" ? "carried_forward" : "needs_review" };
   }
 
   /**
    * Makes a new head rest on the pull request's last review when its diff, against the
-   * same base branch, is the one that was reviewed. Whether an approval may then pass
-   * here is the reconciler's question, as for any pass.
+   * same base branch, is the one that was reviewed, and says whether it does. Whether an
+   * approval may then pass here is the reconciler's question, as for any pass.
    */
-  private async carryForward(github: GateGitHub, head: HeadRef, pull: LivePull): Promise<void> {
+  private async carryForward(github: GateGitHub, head: HeadRef, pull: LivePull): Promise<boolean> {
     const { store } = this.deps;
     const source = await store.findCarrySource(head);
-    if (source === null || source.headSha === head.headSha) return;
-    if (source.diffHash === null || source.baseRef !== pull.baseRef) return;
-    if ((await github.hashPullDiff(pull.baseSha, pull.headSha)) !== source.diffHash) return;
-    await store.carry(head, source.id, this.deps.now());
+    if (source === null || source.headSha === head.headSha) return false;
+    if (source.diffHash === null || source.baseRef !== pull.baseRef) return false;
+    if ((await github.hashPullDiff(pull.baseSha, pull.headSha)) !== source.diffHash) return false;
+    if (!(await store.carry(head, source.id, this.deps.now()))) return false;
     this.deps.log.info("github_review.carried_forward", {
       pull_number: pull.number,
       head_sha: pull.headSha,
       reviewed_sha: source.headSha,
     });
+    return true;
   }
 
   /** A human passes the head's check, on the record. The caller has checked their access. */

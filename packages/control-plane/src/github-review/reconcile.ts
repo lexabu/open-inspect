@@ -284,6 +284,9 @@ export class Reconciler {
         if (attempt === null || attempt.id !== evidence.attemptId) {
           return ask("No AI review covers this diff.");
         }
+        // Neither verdict is shown as carried unless this is still the diff it was of.
+        const changed = await this.notAsReviewed(github, pull, head, attempt);
+        if (changed !== null) return ask(changed);
         const result = await this.attemptResult(attempt);
         const summary = `Carried forward from commit \`${short(attempt.headSha)}\`: the pull request's own diff is unchanged.\n\n${result.summary}`;
         if (!result.approved) {
@@ -297,8 +300,8 @@ export class Reconciler {
             reviewAction: true,
           };
         }
-        const blocked = await this.passBlocked(github, pull, head, attempt);
-        if (blocked !== null) return ask(`${summary}\n\n${blocked}`);
+        const shared = await github.sharedHeadReason(pull);
+        if (shared !== null) return ask(`${summary}\n\n${shared}`);
         return {
           status: "completed",
           conclusion: "success",
@@ -329,12 +332,27 @@ export class Reconciler {
   }
 
   /**
-   * Why a head must not pass although what it rests on approves, or null when it may.
-   * The commit must be the pull request's head and the only open pull request on it, and
-   * the review or override must still be of the pull request as it is: same base branch,
-   * and the same diff if the base has moved on or the review was of another head.
+   * Why a head must not pass although what it rests on approves, or null when it may:
+   * the review or override must still be of the pull request as it is, and the pull
+   * request must be the only open one on the commit.
    */
   private async passBlocked(
+    github: GateGitHub,
+    pull: LivePull,
+    head: ReviewHead,
+    reviewed: Reviewed
+  ): Promise<string | null> {
+    return (
+      (await this.notAsReviewed(github, pull, head, reviewed)) ?? github.sharedHeadReason(pull)
+    );
+  }
+
+  /**
+   * Why a review or override is not of the pull request as it is now, or null when it
+   * is: the commit is the head, the base branch is the same, and so is the diff if the
+   * base has moved on or the review was of another head.
+   */
+  private async notAsReviewed(
     github: GateGitHub,
     pull: LivePull,
     head: ReviewHead,
@@ -352,6 +370,6 @@ export class Reconciler {
         return `The pull request's diff against \`${pull.baseRef}\` could not be shown to be the one that was reviewed.`;
       }
     }
-    return github.sharedHeadReason(pull);
+    return null;
   }
 }

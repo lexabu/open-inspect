@@ -403,15 +403,16 @@ export class ReviewGateStore {
   }
 
   /**
-   * Makes a head rest on the verdict of an earlier review, unless it rests on something
-   * by now (a review of the head itself that started meanwhile takes precedence) or that
-   * verdict is no longer the pull request's latest.
+   * Makes a head rest on the verdict of an earlier review, in place of nothing or of an
+   * older verdict it carried. Refused, with false, when the head rests on a review of its
+   * own or an override by now, or the verdict is no longer the pull request's latest.
    */
-  async carry(head: HeadKey, attemptId: string, now: number): Promise<void> {
-    await this.db
+  async carry(head: HeadKey, attemptId: string, now: number): Promise<boolean> {
+    const result = await this.db
       .prepare(
         `UPDATE github_review_heads SET carried_attempt_id = ?, note = NULL, ${TOUCH}
-         WHERE ${HEAD_KEY} AND ${NO_EVIDENCE} AND ? = (${LATEST_VERDICT})`
+         WHERE ${HEAD_KEY} AND attempt_id IS NULL AND override_by IS NULL
+           AND ? = (${LATEST_VERDICT})`
       )
       .bind(
         attemptId,
@@ -424,6 +425,7 @@ export class ReviewGateStore {
         head.prNumber
       )
       .run();
+    return result.meta.changes === 1;
   }
 
   /**
