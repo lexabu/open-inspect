@@ -171,11 +171,15 @@ ${prBranchesBlock}
 ${prDescriptionBlock}
 ${buildIndependentReviewerSection(reviewer)}${buildPreMergeSection(preMerge, headSha, reviewer)}
 ## Instructions
-1. Review commit \`${headSha}\` exactly, even if the PR branch has moved on. Check it out and diff it:
+1. Review commit \`${headSha}\` exactly, even if the PR branch has moved on. Check it out, then
+   read its diff from GitHub (this needs no local history, so it works in a shallow clone):
 
-   git fetch --no-tags origin ${baseSha} ${headSha} || git fetch --no-tags origin pull/${number}/head
+   git fetch --no-tags origin ${headSha} || git fetch --no-tags origin pull/${number}/head
    git checkout --detach ${headSha}
-   git diff ${baseSha}...${headSha}
+   gh api -H "Accept: application/vnd.github.diff" repos/${repositoryPath}/compare/${baseSha}...${headSha}
+
+   If you cannot read that diff, do not review from anything else and give no verdict: submit a
+   COMMENT review saying the diff for commit \`${headSha}\` could not be read.
 
 2. Review the changes thoroughly, focusing on:
    - Correctness and potential bugs

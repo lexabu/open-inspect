@@ -874,13 +874,7 @@ describe("POST /webhooks/github", () => {
 
       expect(await env.GITHUB_KV.get("delivery:delivery-refusal-comment")).toBeNull();
       expect(await env.GITHUB_KV.get("delivery-dispatch:delivery-refusal-comment")).toBeNull();
-      // The refused review releases its commit claim and clears the delivery marker.
-      expect(env.GITHUB_KV.delete).toHaveBeenCalledWith("delivery:delivery-refusal-comment");
-      expect(
-        vi
-          .mocked(env.GITHUB_KV.delete)
-          .mock.calls.filter(([key]) => !String(key).startsWith("review-claim:"))
-      ).toHaveLength(1);
+      expect(env.GITHUB_KV.delete).toHaveBeenCalledTimes(1);
       expect(
         cpFetch.mock.calls.filter(([url]) => String(url) === "https://internal/sessions")
       ).toHaveLength(1);

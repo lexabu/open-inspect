@@ -25,7 +25,8 @@ const webhookNumberedObjectSchema = z.object({
   number: z.number().optional(),
 });
 
-const commitShaSchema = z.string().regex(/^[0-9a-f]{40}$/);
+// SHA-1 repositories use 40 hex characters, SHA-256 repositories 64.
+const commitShaSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 
 const pullRequestSchema = z.object({
   number: z.number(),

@@ -208,6 +208,7 @@ const pullRequestReviewsResponseSchema = z.array(
   z.object({
     user: z.object({ login: z.string() }).nullable(),
     commit_id: z.string().nullable(),
+    state: z.string(),
   })
 );
 
@@ -215,15 +216,15 @@ const REVIEWS_PAGE_SIZE = 100;
 const MAX_REVIEW_PAGES = 10;
 
 /**
- * The reviewer login and reviewed commit of each review on a pull request, oldest
- * first, or null when GitHub cannot be read.
+ * The reviewer login, reviewed commit and state of each review on a pull request,
+ * oldest first, or null when GitHub cannot be read.
  */
 export async function listPullRequestReviews(
   token: string,
   reviewsUrl: string,
   userAgent: string = DEFAULT_APP_NAME
-): Promise<{ login: string; commitId: string }[] | null> {
-  const reviews: { login: string; commitId: string }[] = [];
+): Promise<{ login: string; commitId: string; state: string }[] | null> {
+  const reviews: { login: string; commitId: string; state: string }[] = [];
   try {
     for (let page = 1; page <= MAX_REVIEW_PAGES; page++) {
       const response = await fetch(`${reviewsUrl}?per_page=${REVIEWS_PAGE_SIZE}&page=${page}`, {
@@ -240,7 +241,11 @@ export async function listPullRequestReviews(
       if (!parsed.success) return null;
       for (const review of parsed.data) {
         if (review.user && review.commit_id) {
-          reviews.push({ login: review.user.login, commitId: review.commit_id });
+          reviews.push({
+            login: review.user.login,
+            commitId: review.commit_id,
+            state: review.state,
+          });
         }
       }
       if (parsed.data.length < REVIEWS_PAGE_SIZE) return reviews;

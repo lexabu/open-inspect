@@ -61,7 +61,10 @@ describe("buildCodeReviewPrompt", () => {
   it("pins every review to the head commit and marks the pre-merge pass", () => {
     const opening = buildCodeReviewPrompt(baseParams);
     expect(opening).toContain(`git checkout --detach ${baseParams.headSha}`);
-    expect(opening).toContain(`git diff ${baseParams.baseSha}...${baseParams.headSha}`);
+    expect(opening).toContain(
+      `gh api -H "Accept: application/vnd.github.diff" repos/acme/widgets/compare/${baseParams.baseSha}...${baseParams.headSha}`
+    );
+    expect(opening).toContain("give no verdict");
     expect(opening).toContain(`"commit_id": "${baseParams.headSha}",`);
     expect(opening).not.toContain("gh pr diff");
     expect(opening).not.toContain("## Pre-merge Review");

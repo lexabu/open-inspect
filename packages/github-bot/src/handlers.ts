@@ -88,7 +88,6 @@ export async function handleReviewRequested(
     title: `GitHub: Review PR #${pr.number}`,
     action: "review",
     reactionPath: `issues/${pr.number}`,
-    reviewedCommit: { sha: pr.head.sha, preMerge: false },
     buildPrompt: reviewPromptFor(env, repo, pr, false),
   });
 }
@@ -118,6 +117,10 @@ export async function handleReviewApproved(
   if (review.user.type === "Bot" || isBotLogin(review.user.login, env.GITHUB_BOT_USERNAME)) {
     return skip("bot_approval");
   }
+  // GitHub never counts an author's own approval toward merging.
+  if (review.user.login.toLowerCase() === pr.user.login.toLowerCase()) {
+    return skip("self_approval");
+  }
   if (pr.state !== "open") return skip("pr_not_open");
   if (pr.draft) return skip("draft_pr");
   // An approval of an older commit is stale; the next approval on the head will run.
@@ -130,7 +133,7 @@ export async function handleReviewApproved(
     title: `GitHub: Pre-merge review PR #${pr.number}`,
     action: "approval_review",
     reactionPath: `issues/${pr.number}`,
-    reviewedCommit: { sha: review.commit_id, preMerge: true },
+    preMergeCommit: review.commit_id,
     buildPrompt: reviewPromptFor(env, repo, pr, true),
   });
 }
@@ -155,7 +158,6 @@ export async function handlePullRequestOpened(
     title: `GitHub: Review PR #${pr.number}`,
     action: "auto_review",
     reactionPath: `issues/${pr.number}`,
-    reviewedCommit: { sha: pr.head.sha, preMerge: false },
     buildPrompt: reviewPromptFor(env, repo, pr, false),
   });
 }

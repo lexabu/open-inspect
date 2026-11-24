@@ -163,10 +163,11 @@ export async function startSession(
     /** `!model` / `!reasoning` flags parsed from the triggering comment, if any. */
     inlineFlags?: ParseInlinePromptFlagsResult;
     /**
-     * The commit a review runs on, claimed while it runs. A pre-merge review skips a
-     * commit that is claimed, already reviewed by the bot, or no longer the live head.
+     * The approved commit of a pre-merge review, claimed while it runs. The review is
+     * skipped when that commit is claimed, already reviewed by the bot, or no longer the
+     * live head.
      */
-    reviewedCommit?: { sha: string; preMerge: boolean };
+    preMergeCommit?: string;
     buildPrompt: (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string;
   }
 ): Promise<HandlerResult> {
@@ -205,7 +206,7 @@ export async function startSession(
   const userAgent = resolveAppName(env);
   const meta = { trace_id: traceId, repo: repoFullName, pull_number: pullNumber };
 
-  const claim = params.reviewedCommit
+  const claim = params.preMergeCommit
     ? commitReviewClaim(
         env,
         log,
@@ -215,10 +216,10 @@ export async function startSession(
           pullUrl: `https://api.github.com/repos/${repositoryPath}/pulls/${pullNumber}`,
         },
         meta,
-        params.reviewedCommit.sha
+        params.preMergeCommit
       )
     : null;
-  if (claim && params.reviewedCommit?.preMerge) {
+  if (claim) {
     const skipReason = await claim.checkPreMerge();
     if (skipReason !== null) {
       log.info("handler.pre_merge_review_skipped", { ...meta, skip_reason: skipReason });

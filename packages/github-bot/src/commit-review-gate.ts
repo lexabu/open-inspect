@@ -5,12 +5,17 @@ import type { Logger } from "./logger";
 import { getPullRequestState, listPullRequestReviews } from "./github-auth";
 
 /**
- * Long enough to outlast a running review; after that the bot's posted review on the
- * commit is what marks it reviewed.
+ * About as long as a review takes. A skipped approval is not retried, so a short claim
+ * keeps a failed pre-merge review from blocking later approvals of the same commit for
+ * long; once a review posts, GitHub's review list marks the commit reviewed.
  */
-const REVIEW_CLAIM_TTL_MS = 2 * 60 * 60 * 1000;
+const REVIEW_CLAIM_TTL_MS = 15 * 60 * 1000;
 
-/** Marks one commit of one PR as under review, so a pre-merge pass does not repeat it. */
+/**
+ * Marks one commit of one PR as under pre-merge review, so a second approval of it does
+ * not start a duplicate. Opening reviews do not claim: an approval during one costs at
+ * most a duplicate review, while a claim from a failed one would lose the pre-merge pass.
+ */
 export interface CommitReviewClaim {
   /** Skip with a reason when a pre-merge review would repeat or miss the live head. */
   checkPreMerge(): Promise<string | null>;
@@ -53,8 +58,12 @@ export function commitReviewClaim(
         log.warn("handler.reviews_unreadable", { ...meta, commit });
         return null;
       }
+      // A dismissed review no longer counts, so the pre-merge pass runs again.
       const reviewed = reviews.some(
-        (review) => review.commitId === commit && isBotLogin(review.login, env.GITHUB_BOT_USERNAME)
+        (review) =>
+          review.commitId === commit &&
+          review.state.toUpperCase() !== "DISMISSED" &&
+          isBotLogin(review.login, env.GITHUB_BOT_USERNAME)
       );
       return reviewed ? "commit_already_reviewed" : null;
     },

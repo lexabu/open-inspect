@@ -69,7 +69,7 @@ import {
   listPullRequestReviews,
   getPullRequestState,
 } from "../src/github-auth";
-import { reviewCommentPayloadSchema } from "../src/payload-schemas";
+import { reviewCommentPayloadSchema, reviewSubmittedPayloadSchema } from "../src/payload-schemas";
 import { getGitHubConfig } from "../src/utils/integration-config";
 
 function createMockLogger(): Logger {
@@ -2565,8 +2565,8 @@ describe("handleReviewApproved", () => {
 
   it("skips when the bot already reviewed the approved commit", async () => {
     vi.mocked(listPullRequestReviews).mockResolvedValue([
-      { login: "bob", commitId: HEAD },
-      { login: "test-bot[bot]", commitId: HEAD },
+      { login: "bob", commitId: HEAD, state: "APPROVED" },
+      { login: "test-bot[bot]", commitId: HEAD, state: "COMMENTED" },
     ]);
 
     const result = await handleReviewApproved(
@@ -2579,10 +2579,11 @@ describe("handleReviewApproved", () => {
     expect(result).toEqual({ outcome: "skipped", skip_reason: "commit_already_reviewed" });
   });
 
-  it("reviews when the bot only reviewed older commits", async () => {
+  it("reviews when the bot only reviewed older commits or was dismissed", async () => {
     vi.mocked(listPullRequestReviews).mockResolvedValue([
-      { login: "test-bot[bot]", commitId: "c".repeat(40) },
-      { login: "bob", commitId: HEAD },
+      { login: "test-bot[bot]", commitId: "c".repeat(40), state: "COMMENTED" },
+      { login: "test-bot[bot]", commitId: HEAD, state: "DISMISSED" },
+      { login: "bob", commitId: HEAD, state: "APPROVED" },
     ]);
 
     const result = await handleReviewApproved(
@@ -2703,7 +2704,7 @@ describe("handleReviewApproved", () => {
     expect(kv(env).put).not.toHaveBeenCalled();
   });
 
-  it("lets the opening review claim its commit so approval does not repeat it", async () => {
+  it("does not let the opening review claim its commit", async () => {
     const env = createMockEnv();
 
     await handlePullRequestOpened(
@@ -2716,6 +2717,27 @@ describe("handleReviewApproved", () => {
       "trace-open-claim"
     );
 
-    expect(kv(env).put).toHaveBeenCalledWith(claimKey, "1", expect.anything());
+    expect(kv(env).put).not.toHaveBeenCalledWith(claimKey, expect.anything(), expect.anything());
+  });
+
+  it("skips an author approving their own PR", async () => {
+    const result = await handleReviewApproved(
+      createMockEnv(),
+      createMockLogger(),
+      { ...approval, review: { ...approval.review, user: { login: "Alice", type: "User" } } },
+      "trace-self"
+    );
+
+    expect(result).toEqual({ outcome: "skipped", skip_reason: "self_approval" });
+  });
+
+  it("accepts SHA-256 commit ids", () => {
+    const sha256 = "e".repeat(64);
+    const parsed = reviewSubmittedPayloadSchema.safeParse({
+      ...approval,
+      review: { ...approval.review, commit_id: sha256 },
+      pull_request: { ...approval.pull_request, head: { ref: "f", sha: sha256 } },
+    });
+    expect(parsed.success).toBe(true);
   });
 });
