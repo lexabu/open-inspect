@@ -74,6 +74,15 @@ describe("buildCodeReviewPrompt", () => {
     const preMerge = buildCodeReviewPrompt({ ...baseParams, preMerge: true });
     expect(preMerge).toContain("## Pre-merge Review");
     expect(preMerge).toContain(`asked for again on commit \`${baseParams.headSha}\``);
+    expect(preMerge).not.toContain("review-run=");
+
+    const marked = buildCodeReviewPrompt({
+      ...baseParams,
+      runMarker: "<!-- open-inspect:review-run=abc -->",
+    });
+    expect(marked).toContain(
+      "Put this line in the review body exactly as written, on a line of its own:\n   <!-- open-inspect:review-run=abc -->"
+    );
   });
 
   it("lets a single reviewer approve or request changes", () => {

@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createCheckRun,
-  findCheckRun,
   getCompareDiff,
   updateCheckRun,
   type GitHubRepoClient,
@@ -130,37 +129,6 @@ describe("updateCheckRun", () => {
         output: { title: "t", summary: "s" },
       })
     ).toBe(false);
-  });
-});
-
-describe("findCheckRun", () => {
-  it("returns the App's newest AI Review run on the commit", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(
-      Response.json({
-        total_count: 2,
-        check_runs: [
-          { id: 5, status: "completed", started_at: "2026-11-23T09:00:00Z" },
-          { id: 9, status: "in_progress", started_at: "2026-11-23T10:00:00Z" },
-        ],
-      })
-    );
-
-    expect(await findCheckRun(client, "12345", SHA)).toEqual({
-      run: { id: 9, status: "in_progress", startedAt: "2026-11-23T10:00:00Z" },
-    });
-    expect(lastRequest().url).toBe(
-      `https://api.github.com/repos/acme/widgets/commits/${SHA}/check-runs?check_name=AI+Review&app_id=12345&filter=latest`
-    );
-  });
-
-  it("tells a commit with no run from an unreadable one", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(
-      Response.json({ total_count: 0, check_runs: [] })
-    );
-    expect(await findCheckRun(client, "12345", SHA)).toEqual({ run: null });
-
-    vi.mocked(globalThis.fetch).mockResolvedValue(new Response("Forbidden", { status: 403 }));
-    expect(await findCheckRun(client, "12345", SHA)).toBeNull();
   });
 });
 

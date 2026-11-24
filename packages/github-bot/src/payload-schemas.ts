@@ -61,8 +61,9 @@ export const reviewRequestedPayloadSchema = z.object({
   sender: githubSenderSchema,
 });
 
-export const pullRequestSynchronizePayloadSchema = z.object({
-  action: z.literal("synchronize"),
+/** A PR whose diff may have changed: a new head, or (`edited`) a new base branch. */
+export const pullRequestChangedPayloadSchema = z.object({
+  action: z.enum(["synchronize", "edited"]),
   pull_request: reviewedPullRequestSchema.extend({ draft: z.boolean(), state: z.string() }),
   repository: repositorySchema,
   sender: githubSenderSchema,
@@ -142,6 +143,12 @@ export const requestedReviewerPayloadSchema = z
   })
   .passthrough();
 
+export const baseChangePayloadSchema = z
+  .object({
+    changes: z.object({ base: z.unknown().optional() }).passthrough().optional(),
+  })
+  .passthrough();
+
 export const reviewAuthorPayloadSchema = z
   .object({
     review: z.object({ user: githubUserSchema.nullable().optional() }).nullable().optional(),
@@ -156,7 +163,7 @@ export const webhookActionPayloadSchema = z
 
 export type PullRequestOpenedPayload = z.infer<typeof pullRequestOpenedPayloadSchema>;
 export type ReviewRequestedPayload = z.infer<typeof reviewRequestedPayloadSchema>;
-export type PullRequestSynchronizePayload = z.infer<typeof pullRequestSynchronizePayloadSchema>;
+export type PullRequestChangedPayload = z.infer<typeof pullRequestChangedPayloadSchema>;
 export type ReviewSubmittedPayload = z.infer<typeof reviewSubmittedPayloadSchema>;
 export type CheckRunPayload = z.infer<typeof checkRunPayloadSchema>;
 export type IssueCommentPayload = z.infer<typeof issueCommentPayloadSchema>;

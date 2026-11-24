@@ -3,9 +3,12 @@
  * says whether the bot reviewed, and approved, exactly that commit.
  *
  * A review session posts its verdict as a GitHub review; the bot's own
- * `pull_request_review` webhook concludes the check. Nothing reviews on push: a new head
- * gets a check that asks for a review, unless the pull request's own diff is unchanged,
- * in which case the last verdict carries forward.
+ * `pull_request_review` webhook concludes the check. Every reviewer session is given a
+ * one-time marker for its review body, and only reviews that carry a marker of the run
+ * count: the bot posts under one identity, and a comment session a user steers must not
+ * be able to pass the check. Nothing reviews on push: a new head gets a check that asks
+ * for a review, unless the pull request's own diff is unchanged, in which case the last
+ * verdict carries forward.
  */
 import { resolveAppName } from "@open-inspect/shared/app-name";
 import { createKvCacheStore, type CacheStore } from "@open-inspect/shared/cache-store";
@@ -14,7 +17,7 @@ import { ADVISORY_APPROVE_MARKER } from "@open-inspect/shared/github-review-verd
 import type { GitHubMergeGate } from "@open-inspect/shared/types/integrations";
 import { encodeRepositoryPathSegments } from "@open-inspect/shared/types/repositories";
 import { z } from "zod";
-import type { Env, PullRequestSynchronizePayload, ReviewSubmittedPayload } from "./types";
+import type { Env, PullRequestChangedPayload, ReviewSubmittedPayload } from "./types";
 import type { Logger } from "./logger";
 import {
   checkSenderPermission,
@@ -28,12 +31,10 @@ import {
 } from "./github-auth";
 import {
   createCheckRun,
-  findCheckRun,
   getCompareDiff,
   updateCheckRun,
   type CheckConclusion,
   type CheckRunState,
-  type ExistingCheckRun,
   type GitHubRepoClient,
 } from "./github-checks";
 import type { HandlerResult } from "./session-startup";
@@ -42,30 +43,43 @@ import { getGitHubConfig, type ResolvedGitHubConfig } from "./utils/integration-
 /** A review that has not posted after this long is taken to have died. */
 export const STUCK_REVIEW_MS = 30 * 60 * 1000;
 const VERDICT_TTL_MS = 90 * 24 * 60 * 60 * 1000;
-const PENDING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const RUN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_OVERRIDE_REASON_LENGTH = 1_000;
 
 const NEEDS_REVIEW_TITLE = "Re-run the AI review before merging";
 
 type Repository = { owner: { login: string }; name: string };
 
-/** The last verdict concluded on a pull request's head, kept so an unchanged diff carries it forward. */
+/** The last verdict on a pull request, kept so a head with the same diff carries it forward. */
 const verdictSchema = z.object({
   /** The head commit the verdict applies to. */
   sha: z.string(),
   /** The commit the bot reviewed, or a human overrode; differs from `sha` once carried forward. */
   reviewedSha: z.string(),
-  /** Hash of the pull request's own diff at `sha`; null when GitHub could not produce the diff. */
+  /** Hash of the pull request's own diff as reviewed; null when GitHub could not produce it. */
   diffHash: z.string().nullable(),
   approved: z.boolean(),
   summary: z.string(),
-  /** Login of the human who overrode the check on `reviewedSha`. */
-  overriddenBy: z.string().optional(),
 });
 type Verdict = z.infer<typeof verdictSchema>;
 
-/** A review in flight, so a session that dies without posting does not hold the check open. */
-const pendingSchema = z.object({ sha: z.string(), startedAt: z.string() });
+/** The review in flight on a pull request: what its reviews must carry, and what they conclude. */
+const runSchema = z.object({
+  sha: z.string(),
+  startedAt: z.string(),
+  checkRunId: z.number(),
+  /** One per reviewer session; a review counts only with one of these in its body. */
+  tokens: z.array(z.string()),
+  /** Configured reviewers. More than `tokens` when one failed to start: the run cannot pass. */
+  expected: z.number(),
+  diffHash: z.string().nullable(),
+});
+type ReviewRun = z.infer<typeof runSchema>;
+
+/** The hidden line a reviewer session ends its review with. */
+function reviewRunMarker(token: string): string {
+  return `<!-- open-inspect:review-run=${token} -->`;
+}
 
 interface Gate {
   mode: Exclude<GitHubMergeGate, "off">;
@@ -119,7 +133,7 @@ async function openGate(env: Env, log: Logger, repository: Repository): Promise<
 
 const verdictKey = (gate: Gate, pullNumber: number) =>
   `ai-review:verdict:${gate.repo}#${pullNumber}`;
-const pendingKey = (repo: string, pullNumber: number) => `ai-review:pending:${repo}#${pullNumber}`;
+const runKey = (repo: string, pullNumber: number) => `ai-review:run:${repo}#${pullNumber}`;
 
 async function readVerdict(gate: Gate, pullNumber: number): Promise<Verdict | null> {
   const parsed = verdictSchema.safeParse(
@@ -134,10 +148,9 @@ function writeVerdict(gate: Gate, pullNumber: number, verdict: Verdict): Promise
   });
 }
 
-async function clearPending(gate: Gate, pullNumber: number, sha: string): Promise<void> {
-  const key = pendingKey(gate.repo, pullNumber);
-  const pending = pendingSchema.safeParse(await gate.store.get(key, "json"));
-  if (pending.success && pending.data.sha === sha) await gate.store.delete(key);
+async function readRun(store: CacheStore, key: string): Promise<ReviewRun | null> {
+  const parsed = runSchema.safeParse(await store.get(key, "json"));
+  return parsed.success ? parsed.data : null;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -208,93 +221,93 @@ function needsReviewState(gate: Gate, headSha: string, why: string): CheckRunSta
   };
 }
 
-/** Puts a state on a commit's check: the run found there, else a new one. */
-async function setCheck(
-  gate: Gate,
-  headSha: string,
-  existing: ExistingCheckRun | null,
-  state: CheckRunState
-): Promise<void> {
-  const ok = existing
-    ? await updateCheckRun(gate.client, existing.id, state)
-    : (await createCheckRun(gate.client, headSha, new Date().toISOString(), state)) !== null;
-  if (!ok) throw new Error(`AI Review check could not be written for ${headSha}`);
+/** Posts a new check run on a commit; it replaces any earlier AI Review run there. */
+async function postCheck(gate: Gate, headSha: string, state: CheckRunState): Promise<void> {
+  if ((await createCheckRun(gate.client, headSha, new Date().toISOString(), state)) === null) {
+    throw new Error(`AI Review check could not be written for ${headSha}`);
+  }
 }
 
 /**
- * Runs a review start and shows it on the check. `whenNotStarted` says what a head with
- * no running review gets: a check that asks for one (a new pull request has no check
- * yet), or nothing (a refused re-run leaves the check as it was).
+ * Runs a review start and shows it on the check. `start` gets a function that mints the
+ * marker each reviewer session must put in its review, or null where the gate is off.
+ * `whenNotStarted` says what a head with no running review gets: a check that asks for
+ * one (a new pull request has no check yet), or nothing (a refused re-run leaves the
+ * check as it was).
  */
 export async function startCheckedReview(
   env: Env,
   log: Logger,
   traceId: string,
-  target: { repository: Repository; pullNumber: number; headSha: string },
+  target: { repository: Repository; pullNumber: number; headSha: string; baseSha: string },
   whenNotStarted: "needs_review" | "keep",
-  start: () => Promise<HandlerResult>
+  start: (runMarker: (() => string) | null) => Promise<HandlerResult>
 ): Promise<HandlerResult> {
-  const { repository, pullNumber, headSha } = target;
-  const startedAt = new Date().toISOString();
-  const meta = { trace_id: traceId, pull_number: pullNumber, head_sha: headSha };
+  const { repository, pullNumber, headSha, baseSha } = target;
+  const gate = await openGate(env, log, repository);
+  if (!gate) return start(null);
 
-  const show = async (started: boolean, reason: string): Promise<void> => {
-    if (!started && whenNotStarted === "keep") return;
-    const gate = await openGate(env, log, repository);
-    if (!gate) return;
-    const state: CheckRunState = started
-      ? {
-          status: "in_progress",
-          output: {
-            title: "AI review in progress",
-            summary: `Reviewing commit \`${short(headSha)}\`.${modeNote(gate)}`,
-          },
-        }
-      : needsReviewState(gate, headSha, `The AI review did not start (${reason}).`);
-    // The sessions already ran or were refused, so a failed write must not fail the delivery:
-    // a redelivery would start the review again.
+  const startedAt = new Date().toISOString();
+  const meta = { trace_id: traceId, repo: gate.repo, pull_number: pullNumber, head_sha: headSha };
+  const tokens: string[] = [];
+  const runMarker = () => {
+    const token = crypto.randomUUID();
+    tokens.push(token);
+    return reviewRunMarker(token);
+  };
+  // The sessions already ran or were refused, so a failed check write must not fail the
+  // delivery: a redelivery would start the review again.
+  const askForReview = async (reason: string): Promise<void> => {
+    if (whenNotStarted === "keep") return;
+    const state = needsReviewState(gate, headSha, `The AI review did not start (${reason}).`);
     if ((await createCheckRun(gate.client, headSha, startedAt, state)) === null) {
-      log.error("check.create_failed", { ...meta, repo: gate.repo, started });
-      return;
-    }
-    if (started) {
-      // A new review of this head replaces an override of it.
-      const verdict = await readVerdict(gate, pullNumber);
-      if (verdict?.overriddenBy && verdict.sha === headSha) {
-        await gate.store.delete(verdictKey(gate, pullNumber));
-      }
-      await gate.store.put(
-        pendingKey(gate.repo, pullNumber),
-        JSON.stringify({ sha: headSha, startedAt }),
-        { ttlMs: PENDING_TTL_MS }
-      );
+      log.error("check.create_failed", { ...meta, started: false });
     }
   };
 
   let result: HandlerResult;
   try {
-    result = await start();
+    result = await start(runMarker);
   } catch (error) {
-    await show(false, "session start failed").catch((showError: unknown) =>
-      log.error("check.create_failed", {
-        ...meta,
-        error: showError instanceof Error ? showError : new Error(String(showError)),
-      })
-    );
+    await askForReview("session start failed");
     throw error;
   }
-  await show(
-    result.outcome === "processed",
-    result.outcome === "skipped" ? result.skip_reason : ""
-  );
+  if (result.outcome === "skipped") {
+    await askForReview(result.skip_reason);
+    return result;
+  }
+
+  const checkRunId = await createCheckRun(gate.client, headSha, startedAt, {
+    status: "in_progress",
+    output: {
+      title: "AI review in progress",
+      summary: `Reviewing commit \`${short(headSha)}\`.${modeNote(gate)}`,
+    },
+  });
+  if (checkRunId === null) {
+    log.error("check.create_failed", { ...meta, started: true });
+    return result;
+  }
+  const run: ReviewRun = {
+    sha: headSha,
+    startedAt,
+    checkRunId,
+    tokens,
+    expected: gate.config.reviewers?.length ?? 1,
+    diffHash: await diffHash(gate, log, baseSha, headSha),
+  };
+  await gate.store.put(runKey(gate.repo, pullNumber), JSON.stringify(run), { ttlMs: RUN_TTL_MS });
   return result;
 }
 
-/** A new head: carry the last verdict forward when the diff is unchanged, else ask for a review. */
-export async function handlePullRequestSynchronized(
+/**
+ * A new head, or a new base branch: carry the last verdict forward when the pull
+ * request's own diff is the one it covers, else ask for a review.
+ */
+export async function handlePullRequestChanged(
   env: Env,
   log: Logger,
-  payload: PullRequestSynchronizePayload,
+  payload: PullRequestChangedPayload,
   traceId: string
 ): Promise<HandlerResult> {
   const { pull_request: pr, repository } = payload;
@@ -310,7 +323,9 @@ export async function handlePullRequestSynchronized(
   ]);
 
   if (verdict && hash !== null && verdict.diffHash === hash) {
-    await setCheck(gate, headSha, null, {
+    // A base change that leaves the diff as reviewed needs no new check on the same head.
+    if (verdict.sha === headSha) return skipped("diff_unchanged");
+    await postCheck(gate, headSha, {
       status: "completed",
       conclusion: verdictConclusion(gate, verdict.approved),
       output: {
@@ -330,12 +345,7 @@ export async function handlePullRequestSynchronized(
     return processed("check_carried_forward");
   }
 
-  await setCheck(
-    gate,
-    headSha,
-    null,
-    needsReviewState(gate, headSha, "No AI review covers this commit.")
-  );
+  await postCheck(gate, headSha, needsReviewState(gate, headSha, "No AI review covers this diff."));
   return processed("check_needs_review");
 }
 
@@ -349,71 +359,69 @@ function reviewerName(review: PullRequestReview): string {
 }
 
 /**
- * Concludes a commit's check from the bot's reviews on it, once every configured
- * reviewer has posted. `timedOut` concludes a run that is still waiting as unfinished.
+ * Concludes the run on a commit once each of its reviewer sessions has posted. Only the
+ * first review carrying each session's marker counts. `timedOut` concludes a run that is
+ * still waiting as unfinished.
  */
-async function concludeFromReviews(
+async function concludeRun(
   env: Env,
   log: Logger,
   gate: Gate,
-  pr: { number: number; headSha: string; baseSha: string },
+  pullNumber: number,
   commit: string,
   timedOut: boolean
 ): Promise<HandlerResult> {
-  const verdict = await readVerdict(gate, pr.number);
-  if (verdict?.overriddenBy && verdict.reviewedSha === commit) return skipped("check_overridden");
+  const key = runKey(gate.repo, pullNumber);
+  const run = await readRun(gate.store, key);
+  if (run?.sha !== commit) return skipped("no_review_run");
 
-  const [found, reviews] = await Promise.all([
-    findCheckRun(gate.client, env.GITHUB_APP_ID, commit),
-    listPullRequestReviews(
-      gate.client.token,
-      `${gate.client.repoUrl}/pulls/${pr.number}/reviews`,
-      gate.client.userAgent
-    ),
-  ]);
-  if (found === null) throw new Error(`AI Review check unreadable for ${commit}`);
-  if (reviews === null) throw new Error(`Reviews unreadable for pull request #${pr.number}`);
-  if (timedOut && found.run?.status !== "in_progress") {
-    await clearPending(gate, pr.number, commit);
-    return skipped("check_not_stuck");
-  }
-
-  // Reviews from before the run started belong to an earlier run on the same commit.
-  const runStart = found.run?.startedAt ? Date.parse(found.run.startedAt) : null;
-  const posted = reviews.filter(
+  const reviews = await listPullRequestReviews(
+    gate.client.token,
+    `${gate.client.repoUrl}/pulls/${pullNumber}/reviews`,
+    gate.client.userAgent
+  );
+  if (reviews === null) throw new Error(`Reviews unreadable for pull request #${pullNumber}`);
+  const countable = reviews.filter(
     (review) =>
       review.commitId === commit &&
       review.state.toUpperCase() !== "DISMISSED" &&
-      isBotLogin(review.login, env.GITHUB_BOT_USERNAME) &&
-      (runStart === null || Date.parse(review.submittedAt) >= runStart)
+      isBotLogin(review.login, env.GITHUB_BOT_USERNAME)
   );
-  const expected = gate.config.reviewers?.length ?? 1;
+  const posted = run.tokens.flatMap((token) => {
+    const first = countable.find((review) => review.body.includes(reviewRunMarker(token)));
+    return first ? [first] : [];
+  });
 
-  if (posted.length < expected) {
+  const conclude = async (state: CheckRunState): Promise<void> => {
+    if (!(await updateCheckRun(gate.client, run.checkRunId, state))) {
+      throw new Error(`AI Review check could not be written for ${commit}`);
+    }
+  };
+
+  if (posted.length < run.expected) {
     if (!timedOut) return skipped("awaiting_reviewers");
-    await setCheck(gate, commit, found.run, {
+    await conclude({
       status: "completed",
       conclusion: gate.mode === "required" ? "failure" : "neutral",
       output: {
         title: "The AI review did not finish",
-        summary: `${posted.length} of ${expected} reviews posted on commit \`${short(commit)}\`. Re-run this check to review again.${modeNote(gate)}`,
+        summary: `${posted.length} of ${run.expected} reviews posted on commit \`${short(commit)}\`. Re-run this check to review again.${modeNote(gate)}`,
       },
       reviewAction: true,
     });
-    await clearPending(gate, pr.number, commit);
+    await gate.store.delete(key);
     log.warn("check.review_timed_out", {
       repo: gate.repo,
-      pull_number: pr.number,
+      pull_number: pullNumber,
       head_sha: commit,
       posted: posted.length,
-      expected,
+      expected: run.expected,
     });
     return processed("check_timed_out");
   }
 
-  const counted = posted.slice(-expected);
-  const approved = counted.every(isApproval);
-  const verdicts = counted
+  const approved = posted.every(isApproval);
+  const verdicts = posted
     .map(
       (review) =>
         `- ${reviewerName(review)}: ${isApproval(review) ? "approve" : "changes requested"} ([review](${review.url}))`
@@ -422,7 +430,7 @@ async function concludeFromReviews(
   const summary = approved
     ? verdicts
     : `${verdicts}\n\nAddress the findings and re-run this check, or ask someone with write access who is not the author to comment ${overrideHint(env)}.`;
-  await setCheck(gate, commit, found.run, {
+  await conclude({
     status: "completed",
     conclusion: verdictConclusion(gate, approved),
     output: {
@@ -431,22 +439,18 @@ async function concludeFromReviews(
     },
     reviewAction: !approved,
   });
-
-  // Only the live head's verdict is worth carrying to the next push.
-  if (commit === pr.headSha) {
-    await writeVerdict(gate, pr.number, {
-      sha: commit,
-      reviewedSha: commit,
-      diffHash: await diffHash(gate, log, pr.baseSha, commit),
-      approved,
-      summary: verdicts,
-    });
-  }
-  await clearPending(gate, pr.number, commit);
+  await writeVerdict(gate, pullNumber, {
+    sha: commit,
+    reviewedSha: commit,
+    diffHash: run.diffHash,
+    approved,
+    summary: verdicts,
+  });
+  await gate.store.delete(key);
   return processed(approved ? "check_approved" : "check_not_approved");
 }
 
-/** The bot's own review landed: conclude the check of the commit it reviewed. */
+/** The bot's own review landed: conclude the run on the commit it reviewed. */
 export async function handleBotReviewSubmitted(
   env: Env,
   log: Logger,
@@ -458,14 +462,7 @@ export async function handleBotReviewSubmitted(
   const gate = await openGate(env, log, repository);
   if (!gate) return skipped("merge_gate_off");
 
-  const result = await concludeFromReviews(
-    env,
-    log,
-    gate,
-    { number: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha },
-    review.commit_id,
-    false
-  );
+  const result = await concludeRun(env, log, gate, pr.number, review.commit_id, false);
   log.info("check.review_evaluated", {
     trace_id: traceId,
     repo: gate.repo,
@@ -478,8 +475,8 @@ export async function handleBotReviewSubmitted(
 
 /**
  * The bounded failure path: a review session that ends without posting leaves no
- * webhook behind, so the next webhook for the pull request concludes a check that has
- * been in progress for longer than `STUCK_REVIEW_MS`.
+ * webhook behind, so the next webhook for the pull request concludes a run that has
+ * been in flight for longer than `STUCK_REVIEW_MS`.
  */
 export async function concludeStuckCheck(
   env: Env,
@@ -488,25 +485,16 @@ export async function concludeStuckCheck(
   pullNumber: number
 ): Promise<void> {
   const store = createKvCacheStore(env.GITHUB_KV);
-  const key = pendingKey(repoFullName(repository), pullNumber);
-  const pending = pendingSchema.safeParse(await store.get(key, "json"));
-  if (!pending.success) return;
-  if (Date.now() - Date.parse(pending.data.startedAt) <= STUCK_REVIEW_MS) return;
+  const key = runKey(repoFullName(repository), pullNumber);
+  const run = await readRun(store, key);
+  if (!run || Date.now() - Date.parse(run.startedAt) <= STUCK_REVIEW_MS) return;
 
   const gate = await openGate(env, log, repository);
   if (!gate) {
     await store.delete(key);
     return;
   }
-  const pr = await readPullRequest(gate, pullNumber);
-  await concludeFromReviews(
-    env,
-    log,
-    gate,
-    { number: pullNumber, headSha: pr.head.sha, baseSha: pr.base.sha },
-    pending.data.sha,
-    true
-  );
+  await concludeRun(env, log, gate, pullNumber, run.sha, true);
 }
 
 async function readPullRequest(gate: Gate, pullNumber: number): Promise<LivePullRequest> {
@@ -532,13 +520,9 @@ export async function readRerunTarget(
   const gate = await openGate(env, log, repository);
   if (!gate) return null;
   const pr = await readPullRequest(gate, pullNumber);
-  const pending = pendingSchema.safeParse(
-    await gate.store.get(pendingKey(gate.repo, pullNumber), "json")
-  );
+  const run = await readRun(gate.store, runKey(gate.repo, pullNumber));
   const reviewRunning =
-    pending.success &&
-    pending.data.sha === pr.head.sha &&
-    Date.now() - Date.parse(pending.data.startedAt) <= STUCK_REVIEW_MS;
+    run?.sha === pr.head.sha && Date.now() - Date.parse(run.startedAt) <= STUCK_REVIEW_MS;
   return { pr, reviewRunning };
 }
 
@@ -614,10 +598,9 @@ export async function handleOverrideComment(
   }
 
   const headSha = pr.head.sha;
-  const found = await findCheckRun(gate.client, env.GITHUB_APP_ID, headSha);
-  if (found === null) throw new Error(`AI Review check unreadable for ${headSha}`);
   const summary = `@${sender.login} overrode the AI Review check on commit \`${short(headSha)}\`.\n\nReason: ${reason}`;
-  await setCheck(gate, headSha, found.run, {
+  // A new check run, so a review still in flight concludes its own, superseded run.
+  await postCheck(gate, headSha, {
     status: "completed",
     conclusion: "success",
     output: { title: `Overridden by @${sender.login}`, summary },
@@ -629,9 +612,8 @@ export async function handleOverrideComment(
     diffHash: await diffHash(gate, log, pr.base.sha, headSha),
     approved: true,
     summary,
-    overriddenBy: sender.login,
   });
-  await clearPending(gate, pullNumber, headSha);
+  await gate.store.delete(runKey(gate.repo, pullNumber));
   if (
     !(await postReaction(
       token,

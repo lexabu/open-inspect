@@ -93,12 +93,17 @@ repository.
 | The bot's review lands                      | Once every configured reviewer has posted on the commit: success if all approve, otherwise not approved.     |
 | New commits                                 | No review runs. The check asks for one: "Re-run the AI review before merging", with a **Review now** button. |
 | Base-branch update, PR's own diff unchanged | The last verdict carries forward to the new head.                                                            |
+| Base branch changed to another branch       | The verdict stays only if the diff is the one it covers; otherwise the check asks for a review.              |
 | **Re-run** or **Review now**                | Reviews the head commit for whoever clicked, if they may trigger the bot.                                    |
 
 In `shadow` mode a missing or unfavourable verdict concludes `neutral`, which never blocks a merge.
 In `required` mode it concludes `failure`, or `action_required` when no review covers the head, so
 the check can be made a required status check. An approve verdict is an `APPROVED` review, or a
 comment-only review that states approve.
+
+Only the reviews of the run the check started count. Each reviewer session is given a one-time
+marker to put in its review, so a review the bot posts for a comment request (for example "approve
+this PR") never passes the check.
 
 **Override.** Someone with write access who is not the pull request's author can pass the head's
 check with a PR comment, and the reason and their name are recorded on the check:
@@ -111,7 +116,8 @@ A new review of the same commit replaces the override.
 
 **If a review never posts.** A review session that ends without posting sends nothing to GitHub. The
 next webhook for that pull request (a comment, a push, a review) concludes a check that has been in
-progress for more than 30 minutes as unfinished, and it can then be re-run.
+progress for more than 30 minutes as unfinished, and it can then be re-run. A review that posts
+after that is not counted.
 
 The check needs the App permission **Checks: Read and write**. GitHub sends an App with that
 permission the **Check run** events for its own checks, including **Re-run** and **Review now**,

@@ -44,7 +44,8 @@ function reviewPromptFor(
   env: Env,
   repo: Pick<ReviewRequestedPayload["repository"], "owner" | "name" | "private">,
   pr: ReviewRequestedPayload["pull_request"],
-  preMerge: boolean
+  preMerge: boolean,
+  runMarker: (() => string) | null
 ): (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string {
   return (config, reviewer) =>
     buildCodeReviewPrompt({
@@ -64,6 +65,7 @@ function reviewPromptFor(
       reviewer,
       commentOnlyReviews: config.commentOnlyReviews,
       preMerge,
+      runMarker: runMarker?.() ?? null,
     });
 }
 
@@ -93,9 +95,9 @@ export async function handleReviewRequested(
     env,
     log,
     traceId,
-    { repository: repo, pullNumber: pr.number, headSha: pr.head.sha },
+    { repository: repo, pullNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha },
     "keep",
-    () =>
+    (runMarker) =>
       startSession(env, log, traceId, {
         repository: repo,
         sender,
@@ -103,7 +105,7 @@ export async function handleReviewRequested(
         title: `GitHub: Review PR #${pr.number}`,
         action: "review",
         reactionPath: `issues/${pr.number}`,
-        buildPrompt: reviewPromptFor(env, repo, pr, false),
+        buildPrompt: reviewPromptFor(env, repo, pr, false, runMarker),
       })
   );
 }
@@ -149,9 +151,9 @@ export async function handleCheckRunReviewRequested(
     env,
     log,
     traceId,
-    { repository: repo, pullNumber, headSha: run.head_sha },
+    { repository: repo, pullNumber, headSha: run.head_sha, baseSha: pr.base.sha },
     "keep",
-    () =>
+    (runMarker) =>
       startSession(env, log, traceId, {
         repository: repo,
         sender,
@@ -159,7 +161,7 @@ export async function handleCheckRunReviewRequested(
         title: `GitHub: Review PR #${pullNumber}`,
         action: "review",
         reactionPath: `issues/${pullNumber}`,
-        buildPrompt: reviewPromptFor(env, repo, pr, true),
+        buildPrompt: reviewPromptFor(env, repo, pr, true, runMarker),
       })
   );
 }
@@ -186,9 +188,9 @@ export async function handlePullRequestOpened(
     env,
     log,
     traceId,
-    { repository: repo, pullNumber: pr.number, headSha: pr.head.sha },
+    { repository: repo, pullNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha },
     "needs_review",
-    () =>
+    (runMarker) =>
       startSession(env, log, traceId, {
         repository: repo,
         sender,
@@ -196,7 +198,7 @@ export async function handlePullRequestOpened(
         title: `GitHub: Review PR #${pr.number}`,
         action: "auto_review",
         reactionPath: `issues/${pr.number}`,
-        buildPrompt: reviewPromptFor(env, repo, pr, false),
+        buildPrompt: reviewPromptFor(env, repo, pr, false, runMarker),
       })
   );
 }

@@ -13,10 +13,11 @@ import { verifyWebhookSignature } from "./verify";
 import { normalizeGitHubEvent } from "@open-inspect/shared/triggers";
 import { signedControlPlaneFetch } from "./internal-auth";
 import {
+  baseChangePayloadSchema,
   checkRunPayloadSchema,
   issueCommentPayloadSchema,
   pullRequestOpenedPayloadSchema,
-  pullRequestSynchronizePayloadSchema,
+  pullRequestChangedPayloadSchema,
   reviewCommentPayloadSchema,
   reviewRequestedPayloadSchema,
   reviewSubmittedPayloadSchema,
@@ -37,7 +38,7 @@ import {
 import {
   concludeStuckCheck,
   handleBotReviewSubmitted,
-  handlePullRequestSynchronized,
+  handlePullRequestChanged,
 } from "./ai-review-check";
 import { createKvCacheStore } from "@open-inspect/shared/cache-store";
 import { toAutofixEnvelope } from "./autofix-ingress";
@@ -320,6 +321,11 @@ async function handleWebhook(
   if (forwardingFailure !== undefined) throw forwardingFailure.error;
 }
 
+function isBaseChange(payload: unknown): boolean {
+  const parsed = baseChangePayloadSchema.safeParse(payload);
+  return parsed.success && parsed.data.changes?.base !== undefined;
+}
+
 function dispatchHandler(
   env: Env,
   log: Logger,
@@ -335,10 +341,11 @@ function dispatchHandler(
         if (!parsed.success) throw new Error(`Malformed pull_request ${p.action} payload`);
         return handlePullRequestOpened(env, log, parsed.data, traceId);
       }
-      if (p.action === "synchronize") {
-        const parsed = pullRequestSynchronizePayloadSchema.safeParse(payload);
-        if (!parsed.success) throw new Error("Malformed pull_request synchronize payload");
-        return handlePullRequestSynchronized(env, log, parsed.data, traceId);
+      // A retargeted base changes the diff just as a push does; other edits do not.
+      if (p.action === "synchronize" || (p.action === "edited" && isBaseChange(payload))) {
+        const parsed = pullRequestChangedPayloadSchema.safeParse(payload);
+        if (!parsed.success) throw new Error(`Malformed pull_request ${p.action} payload`);
+        return handlePullRequestChanged(env, log, parsed.data, traceId);
       }
       if (p.action === "review_requested") {
         if (!isReviewRequestedForBot(payload, env.GITHUB_BOT_USERNAME)) {

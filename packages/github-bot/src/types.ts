@@ -49,7 +49,7 @@ export type {
   CheckRunPayload,
   IssueCommentPayload,
   PullRequestOpenedPayload,
-  PullRequestSynchronizePayload,
+  PullRequestChangedPayload,
   ReviewCommentPayload,
   ReviewRequestedPayload,
   ReviewSubmittedPayload,

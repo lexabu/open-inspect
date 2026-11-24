@@ -101,8 +101,10 @@ export function buildCodeReviewPrompt(params: {
   headSha: string;
   /** The base branch commit the head is diffed against. */
   baseSha: string;
-  /** The pass a human approval starts right before merge. */
+  /** A review asked for again on the head, right before merge. */
   preMerge?: boolean;
+  /** A hidden line the review body must carry for the AI Review check to count it. */
+  runMarker?: string | null;
 }): string {
   const {
     owner,
@@ -121,6 +123,7 @@ export function buildCodeReviewPrompt(params: {
     headSha,
     baseSha,
     preMerge = false,
+    runMarker = null,
   } = params;
   // Reviewers share one GitHub App identity, so a later APPROVE would clear an
   // earlier REQUEST_CHANGES; with several reviewers each one only comments.
@@ -212,7 +215,11 @@ ${buildIndependentReviewerSection(reviewer)}${buildPreMergeSection(preMerge, hea
 }
 JSON
 
-   ${reviewEventGuidance}
+   ${reviewEventGuidance}${
+     runMarker
+       ? `\n   Put this line in the review body exactly as written, on a line of its own:\n   ${runMarker}`
+       : ""
+   }
 
 ${buildCustomInstructionsSection(codeReviewInstructions)}
 ${buildCommentOnlyRule(commentOnlyReviews)}${buildCommentGuidelines(isPublic)}`;

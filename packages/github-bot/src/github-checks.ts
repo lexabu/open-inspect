@@ -108,57 +108,6 @@ export async function updateCheckRun(
   }
 }
 
-const checkRunsResponseSchema = z.object({
-  check_runs: z.array(
-    z.object({
-      id: z.number(),
-      status: z.string(),
-      started_at: z.string().nullable(),
-    })
-  ),
-});
-
-export interface ExistingCheckRun {
-  id: number;
-  status: string;
-  startedAt: string | null;
-}
-
-/**
- * The App's newest AI Review check run on a commit (`run: null` when there is none), or
- * null when GitHub cannot be read.
- */
-export async function findCheckRun(
-  client: GitHubRepoClient,
-  appId: string,
-  headSha: string
-): Promise<{ run: ExistingCheckRun | null } | null> {
-  const query = new URLSearchParams({
-    check_name: AI_REVIEW_CHECK_NAME,
-    app_id: appId,
-    filter: "latest",
-  });
-  try {
-    const response = await fetch(`${client.repoUrl}/commits/${headSha}/check-runs?${query}`, {
-      headers: headers(client),
-      signal: AbortSignal.timeout(GITHUB_API_REQUEST_TIMEOUT_MS),
-    });
-    if (!response.ok) return null;
-    const parsed = checkRunsResponseSchema.safeParse(await response.json());
-    if (!parsed.success) return null;
-    // Ids grow with creation time, so the highest id is the newest run.
-    const newest = parsed.data.check_runs.reduce<(typeof parsed.data.check_runs)[number] | null>(
-      (latest, run) => (latest === null || run.id > latest.id ? run : latest),
-      null
-    );
-    return {
-      run: newest && { id: newest.id, status: newest.status, startedAt: newest.started_at },
-    };
-  } catch {
-    return null;
-  }
-}
-
 /**
  * The diff a pull request shows (`base...head`, from their merge base), or null when
  * GitHub cannot produce it — for example a diff over GitHub's size limit.

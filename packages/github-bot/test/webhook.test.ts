@@ -16,7 +16,6 @@ vi.mock("../src/github-checks", async (importOriginal) => ({
   ...(await importOriginal<typeof GitHubChecks>()),
   createCheckRun: vi.fn().mockResolvedValue(7),
   updateCheckRun: vi.fn().mockResolvedValue(true),
-  findCheckRun: vi.fn().mockResolvedValue({ run: null }),
   getCompareDiff: vi.fn().mockResolvedValue("diff --git a/x b/x\n+one\n"),
 }));
 
@@ -28,7 +27,7 @@ import {
   getPullRequest,
   listPullRequestReviews,
 } from "../src/github-auth";
-import { createCheckRun, findCheckRun, updateCheckRun } from "../src/github-checks";
+import { createCheckRun, updateCheckRun } from "../src/github-checks";
 
 /** Generate a valid GitHub webhook signature for a given secret and body. */
 async function sign(secret: string, body: string): Promise<string> {
@@ -1470,7 +1469,6 @@ describe("AI Review merge gate routing", () => {
     vi.mocked(checkSenderPermission).mockResolvedValue({ hasPermission: true });
     vi.mocked(listPullRequestReviews).mockResolvedValue([]);
     vi.mocked(getPullRequest).mockResolvedValue(pullRequest);
-    vi.mocked(findCheckRun).mockResolvedValue({ run: null });
     const env = makeEnv();
     const cpFetch = vi.mocked(env.CONTROL_PLANE.fetch);
     cpFetch.mockImplementation(async (url) => {
@@ -1522,7 +1520,19 @@ describe("AI Review merge gate routing", () => {
       await flushWaitUntil(ctx);
       return res;
     };
-    return { env, deliver, sessionsCreated };
+    const seedRun = (startedAt: string) =>
+      env.GITHUB_KV.put(
+        "ai-review:run:test/repo#42",
+        JSON.stringify({
+          sha: HEAD,
+          startedAt,
+          checkRunId: 7,
+          tokens: ["token-a"],
+          expected: 1,
+          diffHash: null,
+        })
+      );
+    return { env, deliver, sessionsCreated, seedRun };
   }
 
   const review = (login: string, state: string) => ({
@@ -1540,21 +1550,19 @@ describe("AI Review merge gate routing", () => {
 
     expect(env.AUTOFIX_QUEUE.send).toHaveBeenCalledOnce();
     expect(sessionsCreated()).toBe(0);
-    expect(findCheckRun).not.toHaveBeenCalled();
+    expect(listPullRequestReviews).not.toHaveBeenCalled();
     expect(createCheckRun).not.toHaveBeenCalled();
   });
 
   it("concludes the check from the bot's own review", async () => {
-    const { deliver, sessionsCreated } = gatedEnv();
-    vi.mocked(findCheckRun).mockResolvedValue({
-      run: { id: 7, status: "in_progress", startedAt: "2026-11-23T10:00:00Z" },
-    });
+    const { deliver, sessionsCreated, seedRun } = gatedEnv();
+    await seedRun(new Date().toISOString());
     vi.mocked(listPullRequestReviews).mockResolvedValue([
       {
         login: "test-bot[bot]",
         commitId: HEAD,
         state: "APPROVED",
-        body: "",
+        body: "<!-- open-inspect:review-run=token-a -->",
         url: "https://github.test/review/1",
         submittedAt: "2026-11-23T10:05:00Z",
       },
@@ -1588,6 +1596,28 @@ describe("AI Review merge gate routing", () => {
       HEAD,
       expect.any(String),
       expect.objectContaining({ conclusion: "action_required", reviewAction: true })
+    );
+  });
+
+  it("asks for a review when the base branch is changed, and ignores other edits", async () => {
+    const { deliver } = gatedEnv();
+    const edited = { action: "edited", pull_request: pullRequest, repository, sender: bob };
+
+    await deliver("pull_request", "delivery-edit-title", {
+      ...edited,
+      changes: { title: { from: "Old title" } },
+    });
+    expect(createCheckRun).not.toHaveBeenCalled();
+
+    await deliver("pull_request", "delivery-edit-base", {
+      ...edited,
+      changes: { base: { ref: { from: "main" }, sha: { from: BASE } } },
+    });
+    expect(createCheckRun).toHaveBeenCalledWith(
+      expect.anything(),
+      HEAD,
+      expect.any(String),
+      expect.objectContaining({ conclusion: "action_required" })
     );
   });
 
@@ -1713,14 +1743,8 @@ describe("AI Review merge gate routing", () => {
   });
 
   it("concludes a check left in progress on the next webhook for its pull request", async () => {
-    const { env, deliver, sessionsCreated } = gatedEnv();
-    await env.GITHUB_KV.put(
-      "ai-review:pending:test/repo#42",
-      JSON.stringify({ sha: HEAD, startedAt: "2020-01-01T00:00:00.000Z" })
-    );
-    vi.mocked(findCheckRun).mockResolvedValue({
-      run: { id: 7, status: "in_progress", startedAt: "2020-01-01T00:00:00.000Z" },
-    });
+    const { env, deliver, sessionsCreated, seedRun } = gatedEnv();
+    await seedRun("2020-01-01T00:00:00.000Z");
 
     await deliver("issue_comment", "delivery-plain-comment", comment("Looks fine to me."));
 
@@ -1733,21 +1757,18 @@ describe("AI Review merge gate routing", () => {
         output: expect.objectContaining({ title: "The AI review did not finish" }),
       })
     );
-    expect(await env.GITHUB_KV.get("ai-review:pending:test/repo#42")).toBeNull();
+    expect(await env.GITHUB_KV.get("ai-review:run:test/repo#42")).toBeNull();
   });
 
   it("does not fail a delivery when the stuck-check pass cannot read GitHub", async () => {
-    const { env, deliver } = gatedEnv();
-    await env.GITHUB_KV.put(
-      "ai-review:pending:test/repo#42",
-      JSON.stringify({ sha: HEAD, startedAt: "2020-01-01T00:00:00.000Z" })
-    );
-    vi.mocked(findCheckRun).mockResolvedValue(null);
+    const { env, deliver, seedRun } = gatedEnv();
+    await seedRun("2020-01-01T00:00:00.000Z");
+    vi.mocked(listPullRequestReviews).mockResolvedValue(null);
 
     await deliver("issue_comment", "delivery-stuck-unreadable", comment("Looks fine to me."));
 
     expect(await env.GITHUB_KV.get("delivery:delivery-stuck-unreadable")).toBe("processed");
-    expect(await env.GITHUB_KV.get("ai-review:pending:test/repo#42")).not.toBeNull();
+    expect(await env.GITHUB_KV.get("ai-review:run:test/repo#42")).not.toBeNull();
   });
 });
 
