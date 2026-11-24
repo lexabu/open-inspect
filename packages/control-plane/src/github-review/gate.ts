@@ -149,9 +149,9 @@ export class ReviewGate {
     if (!claimed) return { outcome: "skipped", reason: "review_in_progress" };
 
     const pullKey = { repoId: repository.id, prNumber: pull.number };
+    let checkRunId: number | null = null;
     let started: { sessionId: string; messageId: string; model: string }[];
     try {
-      // Sessions are on record before any is prompted, so none can report unseen.
       const created = [];
       for (const reviewer of request.reviewers) {
         const sessionId = await sessions.create(reviewer);
@@ -165,6 +165,28 @@ export class ReviewGate {
           nonce,
         }))
       );
+      // The sessions and the check run are on record before any session is prompted, so
+      // none can report unseen, and a conclusion always has this run to write to.
+      checkRunId = await github.createCheck(
+        {
+          headSha: pull.headSha,
+          externalId: reviewCheckExternalId(pull.number, attempt.id),
+          startedAt: new Date(startedAt).toISOString(),
+        },
+        {
+          status: "in_progress",
+          output: {
+            title: "AI review in progress",
+            summary: `Reviewing commit \`${short(pull.headSha)}\`.${modeNote(mode)}`,
+          },
+        }
+      );
+      if (checkRunId === null) {
+        // Without it the conclusion creates the check run instead of updating one.
+        log.error("github_review.check_create_failed", { attempt: attempt.id });
+      } else {
+        await store.setCheckRun(attempt.id, checkRunId);
+      }
       started = await Promise.all(
         created.map(async ({ reviewer, sessionId, nonce }) => ({
           sessionId,
@@ -174,35 +196,21 @@ export class ReviewGate {
       );
     } catch (error) {
       // A review that did not fully start decides nothing; a session that did start
-      // reports into a superseded attempt.
+      // reports into a superseded attempt. Nothing replaces its check run, so the run
+      // asks for a review: closed as neutral, it would pass a required check.
       await store.supersedeActive(pullKey, this.deps.now());
+      if (checkRunId !== null) {
+        const state = needsReview(mode, pull.headSha, "The AI review could not be started.");
+        if (!(await github.updateCheck(checkRunId, state))) {
+          log.error("github_review.check_close_failed", { attempt: attempt.id });
+        }
+      }
       throw error;
     }
-
-    const checkRunId = await github.createCheck(
-      {
-        headSha: pull.headSha,
-        externalId: reviewCheckExternalId(pull.number, attempt.id),
-        startedAt: new Date(startedAt).toISOString(),
-      },
-      {
-        status: "in_progress",
-        output: {
-          title: "AI review in progress",
-          summary: `Reviewing commit \`${short(pull.headSha)}\`.${modeNote(mode)}`,
-        },
-      }
-    );
-    if (checkRunId === null) {
-      // Without it the conclusion creates the check run instead of updating one.
-      log.error("github_review.check_create_failed", { attempt: attempt.id });
-    } else {
-      await store.setCheckRun(attempt.id, checkRunId);
-      // An override or a base change may have replaced the attempt while it started;
-      // its check run was not on record then, so it is closed here.
-      if ((await store.getActiveAttempt(pullKey))?.id !== attempt.id) {
-        await this.closeSuperseded(github, [{ ...attempt, checkRunId }]);
-      }
+    // An override or a base change may have superseded the attempt before its check run
+    // was on record, and so without closing it.
+    if (checkRunId !== null && (await store.getAttempt(attempt.id))?.status === "superseded") {
+      await this.closeSuperseded(github, [{ id: attempt.id, checkRunId }]);
     }
     log.info("github_review.started", {
       attempt: attempt.id,
@@ -495,9 +503,10 @@ export class ReviewGate {
       finished ? { approved, summary } : null,
       this.deps.now()
     );
-    if (!concluded) {
+    if (!concluded && (await store.getAttempt(attempt.id))?.status === "superseded") {
       // Superseded while the check was being written: what replaced it decides, and
-      // this run must not be left saying otherwise.
+      // this run must not be left saying otherwise. An attempt that another worker
+      // concluded meanwhile keeps the check as written.
       const repository = { owner: attempt.repoOwner, name: attempt.repoName, id: attempt.repoId };
       await this.closeSuperseded(this.deps.github(repository), [{ ...attempt, checkRunId }]);
     }

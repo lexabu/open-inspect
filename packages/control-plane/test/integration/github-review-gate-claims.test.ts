@@ -192,3 +192,54 @@ describe("an attempt replaced while it starts", () => {
     expect(own?.states.at(-1)).toMatchObject({ output: { title: "Superseded" } });
   });
 });
+
+describe("a run closed as Superseded must have been superseded", () => {
+  it("shows the verdict when a session reports before its start has finished", async () => {
+    const h = harness();
+    // The reviewer finishes the moment it is prompted, before the start goes on.
+    const prompt = h.sessions.prompt;
+    h.sessions.prompt = async (sessionId, reviewer, nonce) => {
+      const messageId = await prompt(sessionId, reviewer, nonce);
+      await h.complete(sessionId, verdictBlock("request_changes"));
+      return messageId;
+    };
+
+    await h.start();
+
+    // Whichever check run is newest on the head decides; it must say changes requested.
+    expect(h.world.checks.at(-1)?.states.at(-1)).toMatchObject({
+      conclusion: "failure",
+      output: { title: "Changes requested" },
+    });
+  });
+
+  it("leaves the verdict alone when a stalled worker finishes after another concluded", async () => {
+    const h = harness();
+    const attemptId = await started(h);
+    // This worker stalls inside its conclusion; its claim is released and recovery concludes.
+    h.world.duringNextRead = async () => {
+      await h.store.releaseStaleConclusions(Number.MAX_SAFE_INTEGER);
+      await h.gate.recover();
+    };
+
+    await h.complete("session-1", verdictBlock("approve"));
+
+    expect(await h.attemptStatus(attemptId)).toBe("concluded");
+    expect(h.latest(1)).toMatchObject({ conclusion: "success", output: { title: "Approved" } });
+  });
+
+  it("asks for a review, not Superseded, when a reviewer cannot be prompted", async () => {
+    const h = harness();
+    h.sessions.prompt = async () => {
+      throw new Error("session refused its prompt");
+    };
+
+    await expect(h.start()).rejects.toThrow("session refused its prompt");
+
+    // Nothing replaces this run, so it must not end neutral: neutral passes a required check.
+    for (const check of h.world.checks) {
+      expect(check.states.at(-1)).not.toMatchObject({ conclusion: "neutral" });
+      expect(check.states.at(-1)).not.toMatchObject({ status: "in_progress" });
+    }
+  });
+});
