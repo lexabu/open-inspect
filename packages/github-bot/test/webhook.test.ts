@@ -240,6 +240,43 @@ describe("POST /webhooks/github", () => {
     });
   });
 
+  it.each([
+    ["changes_requested", "a minimal"],
+    ["approved", "a malformed"],
+  ])("handles a %s review in %s payload without starting a session", async (state) => {
+    const body = JSON.stringify({
+      action: "submitted",
+      review: { id: 5680, state },
+      pull_request: { number: 42 },
+      repository: { id: 99, name: "repo", owner: { login: "test" } },
+      sender: { id: 7, login: "alice", type: "User" },
+    });
+    const signature = await sign(SECRET, body);
+    const env = makeEnv();
+    const ctx = makeCtx();
+
+    await app.fetch(
+      new Request("http://localhost/webhooks/github", {
+        method: "POST",
+        body,
+        headers: {
+          "X-Hub-Signature-256": signature,
+          "X-GitHub-Event": "pull_request_review",
+          "X-GitHub-Delivery": `delivery-review-${state}`,
+        },
+      }),
+      env,
+      ctx
+    );
+
+    await flushWaitUntil(ctx);
+    expect(
+      vi
+        .mocked(env.CONTROL_PLANE.fetch)
+        .mock.calls.some(([url]) => String(url) === "https://internal/sessions")
+    ).toBe(false);
+  });
+
   it("does not queue individual review comment webhooks", async () => {
     const body = JSON.stringify({
       action: "created",

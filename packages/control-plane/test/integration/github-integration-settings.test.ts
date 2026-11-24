@@ -36,6 +36,19 @@ describe("GitHub integration settings harness", () => {
     expect(await resolvedCommentOnly()).toBe(false);
   });
 
+  it("resolves reviewOnApproval: off by default, inherited, and overridable per repository", async () => {
+    const resolved = async () => {
+      const res = await serviceFetch(resolvedEndpoint, { service: "github-bot" });
+      expect(res.status).toBe(200);
+      return (await res.json<{ config: { reviewOnApproval: boolean } }>()).config.reviewOnApproval;
+    };
+    expect(await resolved()).toBe(false);
+    expect((await put(globalEndpoint, { defaults: { reviewOnApproval: true } })).status).toBe(200);
+    expect(await resolved()).toBe(true);
+    expect((await put(repoEndpoint, { reviewOnApproval: false })).status).toBe(200);
+    expect(await resolved()).toBe(false);
+  });
+
   it("resolves to the built-in harness when unconfigured", async () => {
     expect(await resolvedHarness()).toBe("opencode");
   });

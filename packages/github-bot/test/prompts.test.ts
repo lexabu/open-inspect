@@ -56,6 +56,18 @@ describe("buildCodeReviewPrompt", () => {
     expect(prompt).toContain("advice only");
   });
 
+  it("pins the pre-merge review to the approved commit", () => {
+    const commit = "a".repeat(40);
+    const prompt = buildCodeReviewPrompt({ ...baseParams, preMergeCommit: commit });
+    expect(prompt).toContain("## Pre-merge Review");
+    expect(prompt).toContain(`A maintainer approved commit \`${commit}\``);
+    expect(prompt).toContain(`"commit_id": "${commit}",`);
+
+    const opening = buildCodeReviewPrompt(baseParams);
+    expect(opening).not.toContain("## Pre-merge Review");
+    expect(opening).not.toContain("commit_id");
+  });
+
   it("lets a single reviewer approve or request changes", () => {
     const prompt = buildCodeReviewPrompt(baseParams);
     expect(prompt).toContain("<APPROVE, REQUEST_CHANGES, or COMMENT>");

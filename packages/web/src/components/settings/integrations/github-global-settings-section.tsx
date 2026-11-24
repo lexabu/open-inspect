@@ -185,6 +185,9 @@ export function GlobalSettingsSection({
         ...(settings?.defaults?.commentOnlyReviews !== undefined
           ? { commentOnlyReviews: settings.defaults.commentOnlyReviews }
           : {}),
+        ...(settings?.defaults?.reviewOnApproval !== undefined
+          ? { reviewOnApproval: settings.defaults.reviewOnApproval }
+          : {}),
       },
     };
 

@@ -203,3 +203,50 @@ export async function postIssueComment(
     return false;
   }
 }
+
+const pullRequestReviewsResponseSchema = z.array(
+  z.object({
+    user: z.object({ login: z.string() }).nullable(),
+    commit_id: z.string().nullable(),
+  })
+);
+
+const REVIEWS_PAGE_SIZE = 100;
+const MAX_REVIEW_PAGES = 10;
+
+/**
+ * The reviewer login and reviewed commit of each review on a pull request, oldest
+ * first, or null when GitHub cannot be read.
+ */
+export async function listPullRequestReviews(
+  token: string,
+  reviewsUrl: string,
+  userAgent: string = DEFAULT_APP_NAME
+): Promise<{ login: string; commitId: string }[] | null> {
+  const reviews: { login: string; commitId: string }[] = [];
+  try {
+    for (let page = 1; page <= MAX_REVIEW_PAGES; page++) {
+      const response = await fetch(`${reviewsUrl}?per_page=${REVIEWS_PAGE_SIZE}&page=${page}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": userAgent,
+        },
+        signal: AbortSignal.timeout(GITHUB_API_REQUEST_TIMEOUT_MS),
+      });
+      if (!response.ok) return null;
+      const parsed = pullRequestReviewsResponseSchema.safeParse(await response.json());
+      if (!parsed.success) return null;
+      for (const review of parsed.data) {
+        if (review.user && review.commit_id) {
+          reviews.push({ login: review.user.login, commitId: review.commit_id });
+        }
+      }
+      if (parsed.data.length < REVIEWS_PAGE_SIZE) return reviews;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}

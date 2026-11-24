@@ -69,6 +69,18 @@ reviewers' comments on this PR. Start your review body with the line \`**Reviewe
 `;
 }
 
+function buildPreMergeSection(commit: string | null, reviewer: ReviewerContext | null): string {
+  if (!commit) return "";
+  const earlier = reviewer ? "your own earlier review (same reviewer line)" : "your earlier review";
+  return `
+## Pre-merge Review
+A maintainer approved commit \`${commit}\`. This is the last review before merge, so review the
+PR as it stands at that commit. If \`git rev-parse HEAD\` differs, say so at the top of the review
+body. If ${earlier} is on this PR, say which of its findings are now resolved, and repeat only what
+is still open or new.
+`;
+}
+
 export function buildCodeReviewPrompt(params: {
   owner: string;
   repo: string;
@@ -83,6 +95,8 @@ export function buildCodeReviewPrompt(params: {
   isSelfReview?: boolean;
   reviewer?: ReviewerContext | null;
   commentOnlyReviews?: boolean;
+  /** The approved head commit when this is the pre-merge review. */
+  preMergeCommit?: string | null;
 }): string {
   const {
     owner,
@@ -98,6 +112,7 @@ export function buildCodeReviewPrompt(params: {
     isSelfReview = false,
     reviewer = null,
     commentOnlyReviews = false,
+    preMergeCommit = null,
   } = params;
   // Reviewers share one GitHub App identity, so a later APPROVE would clear an
   // earlier REQUEST_CHANGES; with several reviewers each one only comments.
@@ -146,7 +161,7 @@ ${prAuthorBlock}
 ${prBranchesBlock}
 - **Description**:
 ${prDescriptionBlock}
-${buildIndependentReviewerSection(reviewer)}
+${buildIndependentReviewerSection(reviewer)}${buildPreMergeSection(preMergeCommit, reviewer)}
 ## Instructions
 1. Run \`gh pr diff ${number}\` to see the full diff
 2. Review the changes thoroughly, focusing on:
@@ -164,7 +179,7 @@ ${buildIndependentReviewerSection(reviewer)}
      --input - <<'JSON'
 {
   "body": "<your review summary>",
-  "event": "${reviewEvent}",
+  "event": "${reviewEvent}",${preMergeCommit ? `\n  "commit_id": "${preMergeCommit}",` : ""}
   "comments": [
     {
       "path": "<file path>",

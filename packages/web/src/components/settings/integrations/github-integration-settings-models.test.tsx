@@ -118,11 +118,22 @@ describe("GitHubIntegrationSettings models and saves", () => {
       { model: "anthropic/claude-opus-4-5", harness: "claude" as const },
     ];
     setupSWR({
-      global: { defaults: { autoReviewOnOpen: true, reviewers, commentOnlyReviews: true } },
+      global: {
+        defaults: {
+          autoReviewOnOpen: true,
+          reviewers,
+          commentOnlyReviews: true,
+          reviewOnApproval: true,
+        },
+      },
       repos: [
         {
           repo: "acme/web",
-          settings: { reviewers: reviewers.slice(0, 1), commentOnlyReviews: false },
+          settings: {
+            reviewers: reviewers.slice(0, 1),
+            commentOnlyReviews: false,
+            reviewOnApproval: false,
+          },
         },
       ],
       availableRepos: [repo("acme/web")],
@@ -143,12 +154,20 @@ describe("GitHubIntegrationSettings models and saves", () => {
     expect(bodies).toContainEqual([
       "/api/integration-settings/github",
       expect.objectContaining({
-        defaults: expect.objectContaining({ reviewers, commentOnlyReviews: true }),
+        defaults: expect.objectContaining({
+          reviewers,
+          commentOnlyReviews: true,
+          reviewOnApproval: true,
+        }),
       }),
     ]);
     expect(bodies).toContainEqual([
       "/api/integration-settings/github/repos/acme/web",
-      expect.objectContaining({ reviewers: reviewers.slice(0, 1), commentOnlyReviews: false }),
+      expect.objectContaining({
+        reviewers: reviewers.slice(0, 1),
+        commentOnlyReviews: false,
+        reviewOnApproval: false,
+      }),
     ]);
   });
 

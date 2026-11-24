@@ -9,7 +9,9 @@ import {
   postReaction,
   postIssueComment,
   checkSenderPermission,
+  listPullRequestReviews,
 } from "./github-auth";
+import { isBotLogin } from "@open-inspect/shared/github-mention";
 import { resolveSessionTarget } from "./session-target";
 import { createSession, sendPrompt } from "./session-client";
 import { getGitHubConfig, type ResolvedGitHubConfig } from "./utils/integration-config";
@@ -29,7 +31,7 @@ export type HandlerResult =
   | { outcome: "processed"; sessions: LaunchedSession[]; handler_action: string }
   | { outcome: "skipped"; skip_reason: string };
 
-type SessionAction = "review" | "auto_review" | "comment" | "review_comment";
+type SessionAction = "review" | "auto_review" | "approval_review" | "comment" | "review_comment";
 
 const githubRouteResponseSchema = z.discriminatedUnion("via", [
   z.object({ via: z.literal("workspace"), teamId: z.null() }),
@@ -161,6 +163,8 @@ export async function startSession(
     reactionPath: string;
     /** `!model` / `!reasoning` flags parsed from the triggering comment, if any. */
     inlineFlags?: ParseInlinePromptFlagsResult;
+    /** Skip when the bot has already reviewed this commit (the pre-merge review). */
+    skipIfReviewedCommit?: string;
     buildPrompt: (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string;
   }
 ): Promise<HandlerResult> {
@@ -178,6 +182,10 @@ export async function startSession(
     log.debug("handler.auto_review_disabled", { trace_id: traceId, repo: repoFullName });
     return { outcome: "skipped", skip_reason: "auto_review_disabled" };
   }
+  if (action === "approval_review" && !config.reviewOnApproval) {
+    log.debug("handler.review_on_approval_disabled", { trace_id: traceId, repo: repoFullName });
+    return { outcome: "skipped", skip_reason: "review_on_approval_disabled" };
+  }
 
   const gating = await resolveCallerGating(
     env,
@@ -194,6 +202,26 @@ export async function startSession(
   const repositoryPath = encodeRepositoryPathSegments({ repoOwner: owner, repoName });
   const userAgent = resolveAppName(env);
   const meta = { trace_id: traceId, repo: repoFullName, pull_number: pullNumber };
+
+  if (params.skipIfReviewedCommit !== undefined) {
+    const commit = params.skipIfReviewedCommit;
+    const reviews = await listPullRequestReviews(
+      ghToken,
+      `https://api.github.com/repos/${repositoryPath}/pulls/${pullNumber}/reviews`,
+      userAgent
+    );
+    // Unreadable reviews start the review anyway: a duplicate costs less than a missed pass.
+    if (reviews === null) {
+      log.warn("handler.reviews_unreadable", { ...meta, commit });
+    } else if (
+      reviews.some(
+        (review) => review.commitId === commit && isBotLogin(review.login, env.GITHUB_BOT_USERNAME)
+      )
+    ) {
+      log.info("handler.commit_already_reviewed", { ...meta, commit });
+      return { outcome: "skipped", skip_reason: "commit_already_reviewed" };
+    }
+  }
 
   const commentsUrl = `https://api.github.com/repos/${repositoryPath}/issues/${pullNumber}/comments`;
   const postRequiredComment = async (body: string, code: string): Promise<void> => {
@@ -230,6 +258,7 @@ export async function startSession(
     meta,
     async () => {
       // Deprecated auto-review is always workspace-level and never needs a route lookup.
+      // The pre-merge review routes like a review request, so it follows the PR's session.
       const teamId =
         action === "auto_review"
           ? null
@@ -388,13 +417,17 @@ function refusalComment(code: RefusalCode, triggerRepo: string): string {
 
 /**
  * The model selections a trigger starts sessions for: every configured reviewer
- * for a review request or auto-review, otherwise the single configured selection.
+ * for a review request, auto-review or pre-merge review, otherwise the single
+ * configured selection.
  */
 function requestedSelections(
   action: SessionAction,
   config: ResolvedGitHubConfig
 ): ModelSelection[] {
-  if ((action === "review" || action === "auto_review") && config.reviewers) {
+  if (
+    (action === "review" || action === "auto_review" || action === "approval_review") &&
+    config.reviewers
+  ) {
     return config.reviewers.map((reviewer) => ({
       model: reviewer.model,
       harness: reviewer.harness,
