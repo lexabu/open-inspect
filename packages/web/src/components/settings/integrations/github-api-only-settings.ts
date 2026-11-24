@@ -6,7 +6,10 @@ import type { GitHubBotSettings } from "@open-inspect/shared/types/integrations"
  */
 export function apiOnlyGitHubSettings(
   settings: GitHubBotSettings | undefined
-): Pick<GitHubBotSettings, "reviewers" | "commentOnlyReviews" | "reviewTip" | "mergeGate"> {
-  const { reviewers, commentOnlyReviews, reviewTip, mergeGate } = settings ?? {};
-  return { reviewers, commentOnlyReviews, reviewTip, mergeGate };
+): Pick<
+  GitHubBotSettings,
+  "reviewers" | "commentOnlyReviews" | "reviewTip" | "reviewFooter" | "mergeGate"
+> {
+  const { reviewers, commentOnlyReviews, reviewTip, reviewFooter, mergeGate } = settings ?? {};
+  return { reviewers, commentOnlyReviews, reviewTip, reviewFooter, mergeGate };
 }

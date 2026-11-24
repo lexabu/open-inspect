@@ -302,6 +302,34 @@ Commands: `npai` (full review) · `npai security|performance|bugs|tests` · `npa
 The last part appears only where the merge gate is on. With no short command set, the line names
 `@my-app` instead.
 
+### Review footer
+
+With the `reviewFooter` setting on (`false` by default, set through the integration settings API,
+globally or per repository), each review and PR conversation comment a GitHub-triggered session
+posts ends with one line of platform data, added after the session's turn completes:
+
+```text
+Findings via GPT-6.2 Sol · Hindsight memory: searched, 2 facts used · Bedrock cost: $0.05
+```
+
+- **Model**: the catalog name of the model that ran the turn. Replies read `Reply via ...`.
+- **Memory**: counted from the session's own tool calls: Hindsight `recall`/`reflect` (searched,
+  facts returned) and `retain` (updated), and the built-in `memory_search`, `memory_read` and
+  `memory_write` (proposed when the write awaits approval). A Hindsight server is one whose name or
+  URL contains `hindsight`. With no Hindsight server for the repository and no built-in memory call,
+  the part is left out; a configured server the session never called shows `not used`, and memory
+  calls that all failed show `unavailable`.
+- **Cost**: the session's total cost to the cent (`<$0.01` below half a cent), labelled
+  `Bedrock cost` for Amazon Bedrock models.
+
+The control plane finds the posts in the turn's tool calls: a `gh api` write (`--method POST` or any
+field flag) whose response is the created review or comment, or `gh pr comment`, whose output is its
+URL. It then checks the post is the App's own and edits it with a token that can only write pull
+requests on that repository (`PUT` for a review, `PATCH` for a comment). The footer sits under a
+hidden `<!-- open-inspect:footer -->` marker, so a re-run replaces it instead of adding a second.
+Inline review comments are left as they are. When no post is found or GitHub refuses the edit,
+nothing changes and the control plane logs `review_footer` with the reason.
+
 ---
 
 ## `@Mention` Actions

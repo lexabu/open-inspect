@@ -108,6 +108,11 @@ export const githubBotSettingsSchema = z.strictObject({
   commentOnlyReviews: z.boolean().optional(),
   /** Reviews end with one line listing the bot's comment commands; absent means off. */
   reviewTip: z.boolean().optional(),
+  /**
+   * The bot's reviews and replies end with a footer line naming the model, the memory the
+   * session used and its cost, added once the session completes; absent means off.
+   */
+  reviewFooter: z.boolean().optional(),
   /** The `AI Review` merge-gate check; absent means off. */
   mergeGate: githubMergeGateSchema.optional(),
   allowedTriggerUsers: z.array(z.string()).optional(),

@@ -43,7 +43,9 @@ export class SandboxExecutionEventHandler {
     >,
     private readonly transaction: <T>(closure: () => T) => T,
     private readonly offerFallbackTitle: (title: string) => void,
-    private readonly disableManagedMcp: () => void = () => {}
+    private readonly disableManagedMcp: () => void = () => {},
+    /** Ends the GitHub posts a finished turn made with the review footer; never throws. */
+    private readonly footerGitHubPosts: (messageId: string) => Promise<void> = async () => {}
   ) {}
 
   /**
@@ -114,6 +116,10 @@ export class SandboxExecutionEventHandler {
           context: { message_id: event.messageId },
         }
       );
+      this.backgroundTasks.submit(() => this.footerGitHubPosts(event.messageId), {
+        name: "review_footer.apply",
+        context: { message_id: event.messageId },
+      });
       await this.statusService.reconcileAfterExecution(event.success);
     } else {
       this.log.info("prompt.complete", {
