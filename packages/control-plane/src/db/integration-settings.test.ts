@@ -514,6 +514,14 @@ describe("IntegrationSettingsStore", () => {
       expect(result?.codeReviewInstructions).toBe("Focus on security.");
     });
 
+    it("lets a repository opt out of a global commentOnlyReviews", async () => {
+      await store.setGlobal("github", { defaults: { commentOnlyReviews: true } });
+      await store.setRepoSettings("github", "acme/widgets", { commentOnlyReviews: false });
+      expect(
+        (await store.getResolvedConfig("github", "acme/widgets")).settings.commentOnlyReviews
+      ).toBe(false);
+    });
+
     it("stores commentOnlyReviews and rejects a non-boolean value", async () => {
       await store.setRepoSettings("github", "acme/widgets", { commentOnlyReviews: true });
       const config = await store.getResolvedConfig("github", "acme/widgets");

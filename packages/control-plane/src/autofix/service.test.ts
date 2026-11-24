@@ -8,6 +8,7 @@ import { AutofixService } from "./service";
 import type { GitHubPullRequestFeedback } from "../source-control/providers/github-provider";
 import { SourceControlProviderError } from "../source-control/errors";
 import type { CredentialScope } from "../source-control";
+import { ADVISORY_APPROVE_MARKER } from "@open-inspect/shared/github-review-verdict";
 
 type ReviewFeedback = Extract<GitHubPullRequestFeedback, { kind: "review" }>;
 
@@ -834,6 +835,21 @@ describe("AutofixService", () => {
       decision: "skipped",
       reason: "review_state_not_actionable",
     });
+    expect(h.sessions.fetch).not.toHaveBeenCalled();
+  });
+
+  it("treats a comment-only review marked as an approval like an approval", async () => {
+    const h = buildService();
+    h.github.getPullRequestFeedback.mockResolvedValueOnce(
+      openInspectReview({
+        body: `Verdict: approve.\n${ADVISORY_APPROVE_MARKER}`,
+        state: "COMMENTED",
+      })
+    );
+
+    const result = await h.service.process(OPEN_INSPECT_REVIEW_ENVELOPE);
+
+    expect(result).toMatchObject({ decision: "skipped", reason: "review_state_not_actionable" });
     expect(h.sessions.fetch).not.toHaveBeenCalled();
   });
 

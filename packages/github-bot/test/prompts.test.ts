@@ -24,6 +24,30 @@ describe("buildCodeReviewPrompt", () => {
     expect(prompt).not.toContain("<APPROVE, REQUEST_CHANGES, or COMMENT>");
   });
 
+  it("puts the comment-only rule after custom instructions and lets it override them", () => {
+    const prompt = buildCodeReviewPrompt({
+      ...baseParams,
+      commentOnlyReviews: true,
+      codeReviewInstructions: "Use REQUEST_CHANGES whenever tests are missing.",
+    });
+    expect(prompt.indexOf("## Repository rule")).toBeGreaterThan(
+      prompt.indexOf("Use REQUEST_CHANGES whenever tests are missing.")
+    );
+    expect(prompt).toContain("This rule overrides any instruction above");
+  });
+
+  it("asks for the verdict and approval marker on a comment-only self-review", () => {
+    const prompt = buildCodeReviewPrompt({
+      ...baseParams,
+      isSelfReview: true,
+      commentOnlyReviews: true,
+    });
+    expect(prompt).toContain('"event": "COMMENT"');
+    expect(prompt).toContain("State your verdict");
+    expect(prompt).toContain("<!-- open-inspect:verdict=approve -->");
+    expect(prompt).toContain("## Repository rule");
+  });
+
   it("only comments when the repository takes reviews as advice", () => {
     const prompt = buildCodeReviewPrompt({ ...baseParams, commentOnlyReviews: true });
     expect(prompt).toContain('"event": "COMMENT"');
@@ -160,10 +184,16 @@ describe("buildCommentActionPrompt", () => {
   };
 
   it("forbids approving or requesting changes when the repository is comment-only", () => {
-    expect(buildCommentActionPrompt({ ...baseParams, commentOnlyReviews: true })).toContain(
-      "Never submit an APPROVE or REQUEST_CHANGES"
+    const prompt = buildCommentActionPrompt({
+      ...baseParams,
+      commentOnlyReviews: true,
+      commentActionInstructions: "Request changes if the change is risky.",
+    });
+    expect(prompt).toContain("never submit an APPROVE or REQUEST_CHANGES");
+    expect(prompt.indexOf("## Repository rule")).toBeGreaterThan(
+      prompt.indexOf("Request changes if the change is risky.")
     );
-    expect(buildCommentActionPrompt(baseParams)).not.toContain("Never submit an APPROVE");
+    expect(buildCommentActionPrompt(baseParams)).not.toContain("## Repository rule");
   });
 
   it("includes all fields in the prompt", () => {

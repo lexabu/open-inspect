@@ -16,6 +16,7 @@ import { SourceControlProviderError } from "../source-control/errors";
 import type { CredentialScope } from "../source-control";
 import { SessionInternalPaths, type SessionInternalPath } from "../session/contracts";
 import { containsBotMention, isBotLogin } from "@open-inspect/shared/github-mention";
+import { ADVISORY_APPROVE_MARKER } from "@open-inspect/shared/github-review-verdict";
 
 interface FeedbackReceipt {
   feedbackKey: string;
@@ -487,7 +488,11 @@ export class AutofixService {
     if (feedback.kind === "pr_comment") {
       return feedback.body.trim() ? null : "empty_feedback";
     }
-    if (feedback.state === "APPROVED") {
+    // A comment-only bot states an approval in a COMMENT review with a marker; treat it
+    // like a real approval, which needs a new inline thread to queue a fix.
+    const advisoryApproval =
+      feedback.state === "COMMENTED" && feedback.body.includes(ADVISORY_APPROVE_MARKER);
+    if (feedback.state === "APPROVED" || advisoryApproval) {
       return opensInlineThread(feedback) ? null : "review_state_not_actionable";
     }
     if (feedback.state !== "COMMENTED" && feedback.state !== "CHANGES_REQUESTED") {

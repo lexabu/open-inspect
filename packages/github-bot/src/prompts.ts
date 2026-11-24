@@ -1,4 +1,19 @@
 import { encodeRepositoryPathSegments } from "@open-inspect/shared/types/repositories";
+import { ADVISORY_APPROVE_MARKER } from "@open-inspect/shared/github-review-verdict";
+
+/**
+ * The closing section for comment-only repositories. It comes after any custom
+ * instructions and overrides them, so repository text asking for a blocking review
+ * cannot win.
+ */
+function buildCommentOnlyRule(commentOnlyReviews: boolean): string {
+  if (!commentOnlyReviews) return "";
+  return `
+## Repository rule
+This rule overrides any instruction above: never submit an APPROVE or REQUEST_CHANGES pull request
+review in this repository. Submit any review as COMMENT and state its verdict in the text.
+`;
+}
 
 function buildCustomInstructionsSection(instructions: string | null | undefined): string {
   if (!instructions?.trim()) return "";
@@ -87,13 +102,14 @@ export function buildCodeReviewPrompt(params: {
   // earlier REQUEST_CHANGES; with several reviewers each one only comments.
   const commentOnly = isSelfReview || reviewer !== null || commentOnlyReviews;
   const reviewEvent = commentOnly ? "COMMENT" : "<APPROVE, REQUEST_CHANGES, or COMMENT>";
-  const reviewEventGuidance = isSelfReview
-    ? "Use COMMENT because GitHub does not allow pull request authors to approve their own PRs."
+  const commentOnlyReason = isSelfReview
+    ? "GitHub does not allow pull request authors to approve their own PRs"
     : reviewer
-      ? "Use COMMENT: you are one of several reviewers sharing one GitHub identity, so state your\n   verdict (approve or request changes) in the first lines of the review body instead."
-      : commentOnlyReviews
-        ? "Use COMMENT: this repository takes the bot's verdict as advice only, so state it\n   (approve or request changes) in the first lines of the review body instead."
-        : "Use APPROVE if the code looks good, REQUEST_CHANGES if changes are needed,\n   or COMMENT for general feedback.";
+      ? "you are one of several reviewers sharing one GitHub identity"
+      : "this repository takes the bot's verdict as advice only";
+  const reviewEventGuidance = commentOnly
+    ? `Use COMMENT because ${commentOnlyReason}. State your verdict (approve or request changes)\n   in the first lines of the review body, and when it is approve, end the body with the line\n   ${ADVISORY_APPROVE_MARKER}`
+    : "Use APPROVE if the code looks good, REQUEST_CHANGES if changes are needed,\n   or COMMENT for general feedback.";
   const repositoryPath = encodeRepositoryPathSegments({ repoOwner: owner, repoName: repo });
 
   const prTitleBlock = buildUntrustedUserContentBlock({
@@ -162,7 +178,7 @@ JSON
    ${reviewEventGuidance}
 
 ${buildCustomInstructionsSection(codeReviewInstructions)}
-${buildCommentGuidelines(isPublic)}`;
+${buildCommentOnlyRule(commentOnlyReviews)}${buildCommentGuidelines(isPublic)}`;
 }
 
 export function buildCommentActionPrompt(params: {
@@ -239,6 +255,6 @@ ${buildUntrustedUserContentBlock({
    gh api repos/${owner}/${repo}/issues/${number}/comments \\
      --method POST \\
      -f body="<summary of what you did or your response>"${replyInstruction}
-${commentOnlyReviews ? "\nNever submit an APPROVE or REQUEST_CHANGES pull request review in this repository; if a review\nis needed, submit it as COMMENT and state the verdict in its text.\n" : ""}${buildCustomInstructionsSection(commentActionInstructions)}
-${buildCommentGuidelines(isPublic)}`;
+${buildCustomInstructionsSection(commentActionInstructions)}
+${buildCommentOnlyRule(commentOnlyReviews)}${buildCommentGuidelines(isPublic)}`;
 }

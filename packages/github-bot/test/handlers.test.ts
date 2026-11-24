@@ -1026,6 +1026,15 @@ describe("multi-model reviews", () => {
     expect(postReaction).toHaveBeenCalledTimes(1);
   });
 
+  it("tells comment actions in a comment-only repository never to approve", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, commentOnlyReviews: true });
+    const env = createMockEnv();
+
+    await handleIssueComment(env, createMockLogger(), issueCommentPayload, "trace-co-comment");
+
+    expect(promptBodies(env)[0]).toContain("never submit an APPROVE or REQUEST_CHANGES");
+  });
+
   it("tells a comment-only repository's reviewer to post COMMENT", async () => {
     vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, commentOnlyReviews: true });
     const env = createMockEnv();
