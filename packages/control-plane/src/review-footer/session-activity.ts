@@ -68,7 +68,8 @@ function commandLine(command: string): string {
  * can print another command's output next to this one's. Quotes and escapes are honoured.
  */
 export function singleCommandWords(command: string): string[] | null {
-  const text = commandLine(command);
+  // Trailing whitespace, such as the newline after a here-document's delimiter, runs nothing.
+  const text = commandLine(command).trimEnd();
   const words: string[] = [];
   let word: string | null = null;
   let quote: "'" | '"' | null = null;
@@ -139,6 +140,8 @@ const GH_API_VALUE_FLAGS = new Set([
   "--preview",
 ]);
 const GH_API_BODY_FLAGS = new Set(["-f", "--raw-field", "-F", "--field", "--input"]);
+/** `gh api` flags that print something other than the response: no longer a receipt. */
+const GH_API_OUTPUT_FLAGS = new Set(["-q", "--jq", "-t", "--template"]);
 
 /** The method and endpoint of a `gh api` call, from the words after `gh api`. */
 function ghApiRequest(args: string[]): { method: string; endpoint: string } | null {
@@ -151,6 +154,8 @@ function ghApiRequest(args: string[]): { method: string; endpoint: string } | nu
     const flag = equals === -1 ? arg : arg.slice(0, equals);
     if (/^-X./.test(arg)) {
       method = arg.slice(2);
+    } else if (GH_API_OUTPUT_FLAGS.has(flag)) {
+      return null;
     } else if (GH_API_VALUE_FLAGS.has(flag)) {
       const value = equals === -1 ? args[++i] : arg.slice(equals + 1);
       if (value === undefined) return null;
@@ -231,7 +236,8 @@ function postReceipt(call: ToolCallEvent, target: PullRequestTarget): SessionPos
 }
 
 /** One memory call's outcome, validated against what the tool returns on success. */
-type MemoryOutcome = "searched" | "fact_used" | "updated" | "proposed" | "failed" | "no_fact";
+type MemoryOutcome =
+  "searched" | "matched" | "fact_used" | "updated" | "proposed" | "failed" | "no_fact";
 
 const BUILT_IN_MEMORY_TOOLS: ReadonlySet<string> = new Set(MEMORY_TOOL_NAMES);
 
@@ -252,6 +258,8 @@ function hindsightOutcomes(tool: string, output: string): MemoryOutcome[] {
   if (isRecord(response) && response.error !== undefined && response.error !== null) {
     return ["failed"];
   }
+  // An empty answer is not a saved fact or a reflection.
+  if ((tool === "retain" || tool === "reflect") && output.trim() === "") return ["failed"];
   if (tool === "retain") return ["updated"];
   // A reflection answers in prose, not facts: it searched, but used none that can be counted.
   if (tool === "reflect") return ["searched"];
@@ -259,11 +267,17 @@ function hindsightOutcomes(tool: string, output: string): MemoryOutcome[] {
   return ["searched", ...response.results.map((): MemoryOutcome => "fact_used")];
 }
 
-function builtInOutcome(tool: string, output: string): MemoryOutcome {
+function builtInOutcomes(tool: string, output: string): MemoryOutcome[] {
   const response = parseJson(output);
   if (tool === "memory_search") {
-    return memorySearchResponseSchema.safeParse(response).success ? "searched" : "failed";
+    const search = memorySearchResponseSchema.safeParse(response);
+    if (!search.success) return ["failed"];
+    return ["searched", ...search.data.results.map((): MemoryOutcome => "matched")];
   }
+  return [builtInOutcome(tool, response)];
+}
+
+function builtInOutcome(tool: string, response: unknown): MemoryOutcome {
   if (tool === "memory_read") {
     const read = sandboxMemoryReadResultSchema.safeParse(response);
     if (!read.success) return "failed";
@@ -276,11 +290,12 @@ function builtInOutcome(tool: string, output: string): MemoryOutcome {
 }
 
 function emptySource(): MemorySourceActivity {
-  return { searched: false, factsUsed: 0, updated: 0, proposed: 0, failed: 0 };
+  return { searched: false, factsUsed: 0, matched: 0, updated: 0, proposed: 0, failed: 0 };
 }
 
 function record(activity: MemorySourceActivity, outcome: MemoryOutcome): void {
   if (outcome === "searched") activity.searched = true;
+  else if (outcome === "matched") activity.matched += 1;
   else if (outcome === "fact_used") activity.factsUsed += 1;
   else if (outcome === "updated") activity.updated += 1;
   else if (outcome === "proposed") activity.proposed += 1;
@@ -314,10 +329,11 @@ export class TurnActivity {
     if (call.status === "running") return;
     const output = call.status === "completed" ? (call.output ?? "") : null;
     if (builtIn) {
-      record(this.builtIn, output === null ? "failed" : builtInOutcome(call.tool, output));
+      const outcomes = output === null ? ["failed" as const] : builtInOutcomes(call.tool, output);
+      for (const outcome of outcomes) record(this.builtIn, outcome);
     } else if (hindsightTool !== undefined) {
-      const outcomes: MemoryOutcome[] =
-        output === null ? ["failed"] : hindsightOutcomes(hindsightTool, output);
+      const outcomes =
+        output === null ? ["failed" as const] : hindsightOutcomes(hindsightTool, output);
       for (const outcome of outcomes) record(this.hindsight, outcome);
     }
   }

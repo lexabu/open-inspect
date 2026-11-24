@@ -15,6 +15,8 @@ export interface MemorySourceActivity {
   searched: boolean;
   /** Facts returned to the agent: Hindsight recall results, or built-in reads of a fact. */
   factsUsed: number;
+  /** Built-in search results: matches listed, not yet facts read. */
+  matched: number;
   /** Facts saved as active (Hindsight retain, or a built-in write that took effect). */
   updated: number;
   /** Built-in writes that await approval. */
@@ -54,9 +56,10 @@ function plural(count: number, noun: string): string {
 }
 
 function sourcePhrase(label: string, activity: MemorySourceActivity): string {
+  const found = activity.factsUsed > 0 || activity.matched > 0;
   const parts = [
-    ...(activity.searched && activity.factsUsed === 0 ? ["searched, nothing relevant"] : []),
-    ...(activity.searched && activity.factsUsed > 0 ? ["searched"] : []),
+    ...(activity.searched && !found ? ["searched, nothing relevant"] : []),
+    ...(activity.searched && found ? ["searched"] : []),
     ...(activity.factsUsed > 0 ? [`${plural(activity.factsUsed, "fact")} used`] : []),
     ...(activity.updated > 0 ? ["updated"] : []),
     ...(activity.proposed > 0 ? [`${plural(activity.proposed, "fact")} proposed`] : []),
@@ -87,15 +90,38 @@ export function renderFooterLine(facts: FooterFacts): string {
   ].join(" · ");
 }
 
-const FOOTER_LINE = /^(?:Findings|Reply) via /;
-const FENCE = /^\s*(?:```|~~~)/;
+/** A whole line in the shape `renderFooterLine` writes, and nothing else. */
+const FOOTER_LINE =
+  /^(?:Findings|Reply) via [^·\n]+(?: · (?:Hindsight|built-in) memory: [^·\n]+)* · (?:Bedrock cost|Cost): (?:<\$0\.01|\$\d+\.\d{2})$/;
+/** A code fence line: its run of backticks or tildes, and what follows the run. */
+const FENCE = /^[ \t]*(`{3,}|~{3,})(.*)$/;
+
+/**
+ * Whether the lines leave a code fence open. A fence closes only on a run of its own
+ * character at least as long as the opening run, with nothing after it (CommonMark).
+ */
+function endsInsideFence(lines: string[]): boolean {
+  let open: string | null = null;
+  for (const text of lines) {
+    const fence = FENCE.exec(text);
+    if (!fence) continue;
+    const [, run, rest] = fence;
+    if (open === null) {
+      // A backtick fence's info string cannot contain a backtick: that line is inline code.
+      if (!(run[0] === "`" && rest.includes("`"))) open = run;
+    } else if (run[0] === open[0] && run.length >= open.length && rest.trim() === "") {
+      open = null;
+    }
+  }
+  return open !== null;
+}
 
 /** Whether the lines end with the marker line and one footer line, outside any code fence. */
 function endsWithFooterBlock(lines: string[]): boolean {
   const count = lines.length;
   if (count < 2 || lines[count - 2].trimEnd() !== REVIEW_FOOTER_MARKER) return false;
-  if (!FOOTER_LINE.test(lines[count - 1])) return false;
-  return lines.slice(0, -2).filter((text) => FENCE.test(text)).length % 2 === 0;
+  if (!FOOTER_LINE.test(lines[count - 1].trimEnd())) return false;
+  return !endsInsideFence(lines.slice(0, -2));
 }
 
 /**

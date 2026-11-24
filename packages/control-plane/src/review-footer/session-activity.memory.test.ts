@@ -101,7 +101,7 @@ describe("built-in memory results are validated before they count", () => {
         call("memory_write", {}, JSON.stringify({ id: "m", status: "proposed", revisionId: "r" })),
         call("memory_write", {}, "memory_write failed (403): opted out"),
       ])?.builtIn
-    ).toEqual({ searched: false, factsUsed: 0, updated: 1, proposed: 1, failed: 1 });
+    ).toEqual({ searched: false, factsUsed: 0, matched: 0, updated: 1, proposed: 1, failed: 1 });
   });
 
   it("reads a turn whose built-in calls all failed as unavailable", () => {
@@ -146,5 +146,31 @@ describe("memory is reported per source", () => {
 
   it("leaves memory out when no Hindsight server is configured and no built-in tool ran", () => {
     expect(memoryOf([recall("hindsight-code_recall", facts(2))], [])).toBeNull();
+  });
+});
+
+describe("memory activity is not overstated or understated", () => {
+  it("reads a built-in search with matches as searched, not nothing relevant", () => {
+    const match = {
+      results: [
+        { id: "m1", revisionId: "r", scope: { type: "personal" }, title: "t", description: "d" },
+      ],
+      hasMore: false,
+    };
+    expect(phrases([call("memory_search", { query: "q" }, JSON.stringify(match))])).toEqual([
+      "built-in memory: searched",
+    ]);
+  });
+
+  it("counts an empty Hindsight retain or reflect as failed", () => {
+    expect(
+      memoryOf(
+        [
+          call("hindsight-code_retain", { content: "x" }, ""),
+          call("hindsight-code_reflect", { query: "q" }, "  "),
+        ],
+        ["hindsight-code"]
+      )?.hindsight
+    ).toMatchObject({ searched: false, updated: 0, failed: 2 });
   });
 });

@@ -10,6 +10,7 @@ import {
 const IDLE: MemorySourceActivity = {
   searched: false,
   factsUsed: 0,
+  matched: 0,
   updated: 0,
   proposed: 0,
   failed: 0,

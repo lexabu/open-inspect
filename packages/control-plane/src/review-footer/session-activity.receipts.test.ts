@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bash,
+  COMMENT_URL,
   createdComment,
   createdReview,
   postsOf,
@@ -143,5 +144,28 @@ describe("creation receipts only", () => {
         ),
       ])
     ).toEqual([]);
+  });
+
+  it("does not claim a receipt whose output a jq or template flag rewrote", () => {
+    const rewritten = JSON.stringify({ html_url: COMMENT_URL });
+    expect(
+      postsOf([
+        bash(
+          `gh api repos/acme/widgets/issues/7/comments -f body=x --jq '{html_url:"${COMMENT_URL}"}'`,
+          rewritten
+        ),
+        bash(`gh api repos/acme/widgets/issues/7/comments -f body=x -q .`, rewritten),
+        bash(`gh api repos/acme/widgets/issues/7/comments -f body=x --template='{{.}}'`, rewritten),
+        bash(`gh api repos/acme/widgets/issues/7/comments -f body=x -t x`, rewritten),
+      ])
+    ).toEqual([]);
+  });
+
+  it("claims a here-document review whose command ends with a newline", () => {
+    const command = `gh api --method POST repos/acme/widgets/pulls/7/reviews --input - <<'JSON'\n{"body":"x","event":"COMMENT"}\nJSON\n`;
+    expect(postsOf([bash(command, createdReview(111))])).toEqual([
+      { kind: "review", pullNumber: 7, id: 111 },
+    ]);
+    expect(postsOf([bash(`${command}gh pr view 7\n`, createdReview(111))])).toEqual([]);
   });
 });

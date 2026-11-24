@@ -87,6 +87,12 @@ describe("scanTurnToolCalls", () => {
     expect(events.requests).toHaveLength(2);
   });
 
+  it("measures the budget in stored bytes, not string length", () => {
+    // Each row is half a megabyte of three-byte characters: 1.5 MiB stored.
+    const rows = Array.from({ length: 12 }, (_, index) => row(index, "€".repeat(MEGABYTE / 2)));
+    expect(scanTurnToolCalls(pagedEvents(rows), "msg-1", () => {})).toBe(false);
+  });
+
   it("fails loudly on a stored row that is not a tool call", () => {
     const broken: EventRow = { ...row(0, "x"), data: JSON.stringify({ type: "token" }) };
     expect(() => scanTurnToolCalls(pagedEvents([broken]), "msg-1", () => {})).toThrow(

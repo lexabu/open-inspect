@@ -50,4 +50,18 @@ describe("applyFooter and the footer marker", () => {
     const body = `ok ${ADVISORY_APPROVE_MARKER}`;
     expect(applyFooter(body, line)).toBe(`${body}\n\n${REVIEW_FOOTER_MARKER}\n${line}`);
   });
+
+  it("tracks the real fence: a different fence line inside a code block does not close it", () => {
+    const body = `Example:\n\`\`\`\`md\n\`\`\`ts\n\`\`\`\`\n\n${REVIEW_FOOTER_MARKER}\n${earlier}`;
+    expect(applyFooter(body, line)).toBe(
+      `Example:\n\`\`\`\`md\n\`\`\`ts\n\`\`\`\`\n\n${REVIEW_FOOTER_MARKER}\n${line}`
+    );
+  });
+
+  it("takes only a complete generated footer line for a footer, never prose", () => {
+    const body = `Findings\n${REVIEW_FOOTER_MARKER}\nReply via email if this is unclear.`;
+    expect(applyFooter(body, line)).toBe(`${body}\n\n${REVIEW_FOOTER_MARKER}\n${line}`);
+    const withMemory = `Ok\n\n${REVIEW_FOOTER_MARKER}\nReply via Claude Opus 5.5 · Hindsight memory: searched, 2 facts used · built-in memory: not used · Cost: <$0.01`;
+    expect(applyFooter(withMemory, line)).toBe(`Ok\n\n${REVIEW_FOOTER_MARKER}\n${line}`);
+  });
 });

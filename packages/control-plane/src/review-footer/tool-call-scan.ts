@@ -5,8 +5,9 @@ import type { ToolCallEvent } from "./session-activity";
 
 /** Few rows per page: one tool_call event can hold up to a megabyte of output. */
 const TOOL_CALL_PAGE_SIZE = 8;
-/** Stored event text a turn's scan may read in all, well beyond a review turn's. */
-const TOOL_CALL_SCAN_BUDGET_CHARS = 16 * 1024 * 1024;
+/** Stored event bytes (UTF-8) a turn's scan may read in all, well beyond a review turn's. */
+const TOOL_CALL_SCAN_BUDGET_BYTES = 16 * 1024 * 1024;
+const utf8 = new TextEncoder();
 
 function parseToolCall(data: string): ToolCallEvent {
   const parsed = sandboxEventSchema.safeParse(JSON.parse(data));
@@ -24,9 +25,9 @@ export function scanTurnToolCalls(
   events: Pick<EventRepository, "listEventPage">,
   messageId: string,
   visit: (call: ToolCallEvent) => void,
-  limits: { pageSize: number; budgetChars: number } = {
+  limits: { pageSize: number; budgetBytes: number } = {
     pageSize: TOOL_CALL_PAGE_SIZE,
-    budgetChars: TOOL_CALL_SCAN_BUDGET_CHARS,
+    budgetBytes: TOOL_CALL_SCAN_BUDGET_BYTES,
   }
 ): boolean {
   let read = 0;
@@ -39,8 +40,8 @@ export function scanTurnToolCalls(
       cursor,
     });
     for (const row of page.events) {
-      read += row.data.length;
-      if (read > limits.budgetChars) return false;
+      read += utf8.encode(row.data).byteLength;
+      if (read > limits.budgetBytes) return false;
       visit(parseToolCall(row.data));
     }
     cursor = page.hasMore ? page.nextCursor : null;
