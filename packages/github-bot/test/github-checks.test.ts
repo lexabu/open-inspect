@@ -1,32 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  createCheckRun,
-  findSuiteReviewRun,
-  getCompareDiff,
-  listOpenPullsWithHead,
-  updateCheckRun,
-  type GitHubRepoClient,
-} from "../src/github-checks";
-import { getPullRequest, listPullRequestReviews } from "../src/github-auth";
+import { getPullRequest } from "../src/github-auth";
+import { findSuiteReviewRun } from "../src/github-checks";
 
-const client: GitHubRepoClient = {
+const client = {
   token: "tok",
   userAgent: "Acme Bot",
   repoUrl: "https://api.github.com/repos/acme/widgets",
 };
 const SHA = "a".repeat(40);
-const RUN = {
-  headSha: SHA,
-  startedAt: "2026-11-23T10:00:00.000Z",
-  externalId: "open-inspect:pr=42",
-};
 const originalFetch = globalThis.fetch;
-
-function lastRequest() {
-  const [url, init] = vi.mocked(globalThis.fetch).mock.calls.at(-1) ?? [];
-  const body: unknown = init?.body ? JSON.parse(String(init.body)) : undefined;
-  return { url: String(url), init, body };
-}
 
 beforeEach(() => {
   globalThis.fetch = vi.fn();
@@ -34,110 +16,6 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-});
-
-describe("createCheckRun", () => {
-  it("creates the AI Review check in progress on a commit", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(Response.json({ id: 31 }, { status: 201 }));
-
-    const id = await createCheckRun(client, RUN, {
-      status: "in_progress",
-      output: { title: "AI review in progress", summary: "Reviewing." },
-    });
-
-    expect(id).toBe(31);
-    const { url, init, body } = lastRequest();
-    expect(url).toBe("https://api.github.com/repos/acme/widgets/check-runs");
-    expect(init).toMatchObject({
-      method: "POST",
-      headers: {
-        Authorization: "Bearer tok",
-        Accept: "application/vnd.github+json",
-        "User-Agent": "Acme Bot",
-      },
-    });
-    expect(body).toEqual({
-      name: "AI Review",
-      head_sha: SHA,
-      started_at: "2026-11-23T10:00:00.000Z",
-      external_id: "open-inspect:pr=42",
-      status: "in_progress",
-      output: { title: "AI review in progress", summary: "Reviewing." },
-    });
-  });
-
-  it("offers the Review now button on a check that asks for a review", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(Response.json({ id: 32 }, { status: 201 }));
-
-    await createCheckRun(client, RUN, {
-      status: "completed",
-      conclusion: "action_required",
-      output: { title: "Re-run the AI review before merging", summary: "No review." },
-      reviewAction: true,
-    });
-
-    expect(lastRequest().body).toMatchObject({
-      status: "completed",
-      conclusion: "action_required",
-      actions: [
-        {
-          label: "Review now",
-          description: "Run the AI review on this commit",
-          identifier: "review",
-        },
-      ],
-    });
-  });
-
-  it.each([
-    ["GitHub refuses", () => Promise.resolve(new Response("Forbidden", { status: 403 }))],
-    ["the response is malformed", () => Promise.resolve(Response.json({}))],
-    ["the request fails", () => Promise.reject(new Error("network"))],
-  ])("returns null when %s", async (_name, respond) => {
-    vi.mocked(globalThis.fetch).mockImplementation(respond);
-
-    expect(
-      await createCheckRun(client, RUN, {
-        status: "in_progress",
-        output: { title: "t", summary: "s" },
-      })
-    ).toBeNull();
-  });
-});
-
-describe("updateCheckRun", () => {
-  it("concludes a check run and clears its buttons", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(Response.json({ id: 31 }));
-
-    const ok = await updateCheckRun(client, 31, {
-      status: "completed",
-      conclusion: "success",
-      output: { title: "Approved", summary: "- AI review: approve" },
-      reviewAction: false,
-    });
-
-    expect(ok).toBe(true);
-    const { url, init, body } = lastRequest();
-    expect(url).toBe("https://api.github.com/repos/acme/widgets/check-runs/31");
-    expect(init?.method).toBe("PATCH");
-    expect(body).toEqual({
-      status: "completed",
-      conclusion: "success",
-      output: { title: "Approved", summary: "- AI review: approve" },
-      actions: [],
-    });
-  });
-
-  it("reports a refused update", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(new Response("Forbidden", { status: 403 }));
-
-    expect(
-      await updateCheckRun(client, 31, {
-        status: "in_progress",
-        output: { title: "t", summary: "s" },
-      })
-    ).toBe(false);
-  });
 });
 
 describe("findSuiteReviewRun", () => {
@@ -153,9 +31,14 @@ describe("findSuiteReviewRun", () => {
     );
 
     expect(await findSuiteReviewRun(client, 900)).toEqual({ externalId: "open-inspect:pr=42" });
-    expect(lastRequest().url).toBe(
+    const [url, init] = vi.mocked(globalThis.fetch).mock.calls[0];
+    expect(String(url)).toBe(
       "https://api.github.com/repos/acme/widgets/check-suites/900/check-runs?check_name=AI+Review&filter=latest"
     );
+    expect(init?.headers).toMatchObject({
+      Authorization: "Bearer tok",
+      "User-Agent": "Acme Bot",
+    });
   });
 
   it("tells a suite with no AI Review run from an unreadable one", async () => {
@@ -166,94 +49,9 @@ describe("findSuiteReviewRun", () => {
 
     vi.mocked(globalThis.fetch).mockResolvedValue(new Response("Forbidden", { status: 403 }));
     expect(await findSuiteReviewRun(client, 900)).toBeNull();
-  });
-});
 
-describe("listOpenPullsWithHead", () => {
-  const pull = (number: number, state: string, sha: string) => ({ number, state, head: { sha } });
-
-  it("lists only open pull requests whose head is the commit", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(
-      Response.json([
-        pull(42, "open", SHA),
-        pull(57, "open", SHA),
-        pull(58, "closed", SHA),
-        // Contains the commit, but has moved on to a later head.
-        pull(59, "open", "f".repeat(40)),
-      ])
-    );
-
-    expect(await listOpenPullsWithHead(client, SHA)).toEqual([42, 57]);
-    expect(lastRequest().url).toBe(
-      `https://api.github.com/repos/acme/widgets/commits/${SHA}/pulls?per_page=100`
-    );
-  });
-
-  it("returns null when the list may be incomplete or cannot be read", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(
-      Response.json(Array.from({ length: 100 }, (_, index) => pull(index + 1, "open", SHA)))
-    );
-    expect(await listOpenPullsWithHead(client, SHA)).toBeNull();
-
-    vi.mocked(globalThis.fetch).mockResolvedValue(new Response("Not Found", { status: 404 }));
-    expect(await listOpenPullsWithHead(client, SHA)).toBeNull();
-  });
-});
-
-describe("getCompareDiff", () => {
-  it("asks GitHub for the three-dot diff as text", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(new Response("diff --git a/x b/x\n"));
-
-    expect(await getCompareDiff(client, "b".repeat(40), SHA)).toBe("diff --git a/x b/x\n");
-    const { url, init } = lastRequest();
-    expect(url).toBe(
-      `https://api.github.com/repos/acme/widgets/compare/${"b".repeat(40)}...${SHA}`
-    );
-    expect(init?.headers).toMatchObject({ Accept: "application/vnd.github.diff" });
-  });
-
-  it("returns null for a diff GitHub will not produce", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(new Response("too large", { status: 406 }));
-
-    expect(await getCompareDiff(client, "b".repeat(40), SHA)).toBeNull();
-  });
-});
-
-describe("listPullRequestReviews", () => {
-  it("returns submitted reviews with their verdict text and skips pending ones", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(
-      Response.json([
-        {
-          id: 11,
-          user: { login: "test-bot[bot]" },
-          commit_id: SHA,
-          state: "COMMENTED",
-          body: null,
-          html_url: "https://github.test/review/1",
-          submitted_at: "2026-11-23T10:05:00Z",
-        },
-        {
-          id: 12,
-          user: { login: "carol" },
-          commit_id: SHA,
-          state: "PENDING",
-          body: "draft",
-          html_url: "https://github.test/review/2",
-        },
-      ])
-    );
-
-    expect(await listPullRequestReviews("tok", "https://api.test/pulls/42/reviews")).toEqual([
-      {
-        id: 11,
-        login: "test-bot[bot]",
-        commitId: SHA,
-        state: "COMMENTED",
-        body: "",
-        url: "https://github.test/review/1",
-        submittedAt: "2026-11-23T10:05:00Z",
-      },
-    ]);
+    vi.mocked(globalThis.fetch).mockRejectedValue(new Error("network"));
+    expect(await findSuiteReviewRun(client, 900)).toBeNull();
   });
 });
 

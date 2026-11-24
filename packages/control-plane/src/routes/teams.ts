@@ -1,3 +1,4 @@
+import { sessionAccessRow } from "../authorization/session-access-row";
 import { isWorkspaceAdmin } from "@open-inspect/shared/rbac";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -258,13 +259,7 @@ async function teamSessions(
         : null,
     capabilities: effectiveSessionCapabilities(
       sessionViewer,
-      {
-        id: row.id,
-        ownerUserId: row.userId,
-        ownerTeamId: row.ownerTeamId,
-        visibility: row.visibility,
-        collaboratorIds: collaborators.get(row.id) ?? [],
-      },
+      sessionAccessRow(row, collaborators.get(row.id) ?? []),
       mode
     ),
   });

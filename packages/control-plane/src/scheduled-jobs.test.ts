@@ -6,6 +6,7 @@ import { checkAutofixQueueHealth } from "./autofix/queue-health";
 import { SessionIndexStore } from "./db/session-index";
 import type { SqlDatabase } from "./db/sql-database";
 import type * as ImageBuildScheduler from "./image-builds/scheduler";
+import { createReviewGate } from "./github-review/factory";
 import { IMAGE_BUILD_SCHEDULER_CRON, runImageBuildScheduler } from "./image-builds/scheduler";
 import type { Logger } from "./logger";
 import type { BackgroundTasks } from "./platform-ports";
@@ -32,6 +33,11 @@ vi.mock("./image-builds/scheduler", async (importOriginal) => ({
   ...(await importOriginal<typeof ImageBuildScheduler>()),
   runImageBuildScheduler: vi.fn(async () => ({})),
 }));
+vi.mock("./github-review/factory", () => ({
+  createReviewGate: vi.fn(function () {
+    return { recover: reviewRecover };
+  }),
+}));
 vi.mock("./scheduler/factory", () => ({
   createScheduler: vi.fn(function () {
     return { tick: schedulerTick };
@@ -45,7 +51,8 @@ vi.mock("./session/abandoned-draft-sweep", async (importOriginal) => ({
   SessionDraftExpiryClient: vi.fn(),
 }));
 
-const { schedulerTick, sweepRun } = vi.hoisted(() => ({
+const { schedulerTick, sweepRun, reviewRecover } = vi.hoisted(() => ({
+  reviewRecover: vi.fn(async () => {}),
   schedulerTick: vi.fn(async () => ({})),
   sweepRun: vi.fn(async () => ({})),
 }));
@@ -99,17 +106,24 @@ describe("SCHEDULED_JOBS", () => {
     expect(findScheduledJob("0 0 * * *")).toBeUndefined();
   });
 
-  it("runs the every-minute tick: queue health in the background, the scheduler tick awaited", async () => {
+  it("runs the every-minute tick: queue health and review recovery in the background, the scheduler tick awaited", async () => {
     const deps = fakeDeps();
 
     await findScheduledJob(SCHEDULER_TICK_CRON)!.run(deps, 1_000);
 
     expect(createScheduler).toHaveBeenCalledWith(deps.db, deps.env, deps.backgroundTasks);
     expect(schedulerTick).toHaveBeenCalledTimes(1);
-    expect(deps.submitted.map((entry) => entry.name)).toEqual(["autofix_queue_health"]);
+    expect(deps.submitted.map((entry) => entry.name)).toEqual([
+      "autofix_queue_health",
+      "github_review_recovery",
+    ]);
     expect(checkAutofixQueueHealth).not.toHaveBeenCalled();
     await deps.submitted[0]!.task();
     expect(checkAutofixQueueHealth).toHaveBeenCalledWith(deps.env, deps.log);
+    expect(reviewRecover).not.toHaveBeenCalled();
+    await deps.submitted[1]!.task();
+    expect(createReviewGate).toHaveBeenCalledWith(deps.env, deps.db);
+    expect(reviewRecover).toHaveBeenCalledTimes(1);
   });
 
   it("runs the image-build scheduler with the run's correlation", async () => {

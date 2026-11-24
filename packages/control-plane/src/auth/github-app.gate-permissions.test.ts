@@ -126,6 +126,26 @@ describe("sandbox and session installation tokens", () => {
     ).rejects.toThrow("invalid response");
   });
 
+  it("mints the review gate's own token for one repository, with checks write and nothing to push with", async () => {
+    const fetchMock = mockGitHub();
+
+    const token = await auth.mintReviewGateToken(config(), "Acme", 7);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      repository_ids: [7],
+      permissions: { checks: "write", pull_requests: "read", contents: "read", metadata: "read" },
+    });
+    expect(token).toBe("token-1");
+    // Its cache is not the session tokens': a later session token is minted afresh, capped.
+    await auth.getCachedInstallationToken(config(), undefined, {
+      scope: { kind: "repositories", repositoryIds: [7] },
+    });
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/access_tokens"))
+    ).toHaveLength(3);
+  });
+
   it("takes one request when the installation cannot write checks or statuses", () => {
     expect(auth.capGatePermissions({ contents: "write", checks: "read" })).toBeNull();
     expect(auth.capGatePermissions({ contents: "write" })).toBeNull();

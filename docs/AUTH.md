@@ -270,6 +270,11 @@ All rows also require session read permission.
   the session owner or a workspace Owner can add or remove other collaborators. On a team-owned
   session, collaborators must be current team members (others are rejected with `not_team_member`),
   and leaving the team ends their access.
+- **Platform-held sessions answer to no one.** The reviewer sessions of the GitHub
+  [AI Review check](integrations/GITHUB.md#ai-review-check) are private, have no owner or team, and
+  are not listed. Nobody can prompt them, use their sandbox, add collaborators, change their
+  visibility, stop or delete them, in any enforcement mode; a workspace Owner's read is the only
+  access, and it is audited like a break-glass read.
 - **Session owners and participants differ.** A session's owner is its creator, not its team, and
   can read it even when private (with session read permission). Runtime participants and the
   **Mine** filter are attribution and discovery only; they do not grant or limit access.

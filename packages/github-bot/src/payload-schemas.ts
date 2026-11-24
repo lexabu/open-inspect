@@ -61,22 +61,10 @@ export const reviewRequestedPayloadSchema = z.object({
   sender: githubSenderSchema,
 });
 
-/** A PR whose diff may have changed: a new head, or (`edited`) a new base branch. */
+/** A PR no review covers any more: a new head, a new base branch (`edited`), or a reopening. */
 export const pullRequestChangedPayloadSchema = z.object({
-  action: z.enum(["synchronize", "edited"]),
-  pull_request: reviewedPullRequestSchema.extend({ draft: z.boolean(), state: z.string() }),
-  repository: repositorySchema,
-  sender: githubSenderSchema,
-});
-
-/** A review of the bot's that was posted, or dismissed by a maintainer. */
-export const botReviewPayloadSchema = z.object({
-  action: z.enum(["submitted", "dismissed"]),
-  review: z.object({
-    commit_id: commitShaSchema,
-    user: githubUserSchema,
-  }),
-  pull_request: reviewedPullRequestSchema,
+  action: z.enum(["synchronize", "edited", "reopened"]),
+  pull_request: z.object({ number: z.number(), head: z.object({ sha: commitShaSchema }) }),
   repository: repositorySchema,
   sender: githubSenderSchema,
 });
@@ -162,12 +150,6 @@ export const baseChangePayloadSchema = z
   })
   .passthrough();
 
-export const reviewAuthorPayloadSchema = z
-  .object({
-    review: z.object({ user: githubUserSchema.nullable().optional() }).nullable().optional(),
-  })
-  .passthrough();
-
 export const webhookActionPayloadSchema = z
   .object({
     action: z.unknown().optional(),
@@ -177,7 +159,6 @@ export const webhookActionPayloadSchema = z
 export type PullRequestOpenedPayload = z.infer<typeof pullRequestOpenedPayloadSchema>;
 export type ReviewRequestedPayload = z.infer<typeof reviewRequestedPayloadSchema>;
 export type PullRequestChangedPayload = z.infer<typeof pullRequestChangedPayloadSchema>;
-export type BotReviewPayload = z.infer<typeof botReviewPayloadSchema>;
 export type CheckRunPayload = z.infer<typeof checkRunPayloadSchema>;
 export type CheckSuitePayload = z.infer<typeof checkSuitePayloadSchema>;
 export type IssueCommentPayload = z.infer<typeof issueCommentPayloadSchema>;

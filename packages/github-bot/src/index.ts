@@ -14,7 +14,6 @@ import { normalizeGitHubEvent } from "@open-inspect/shared/triggers";
 import { signedControlPlaneFetch } from "./internal-auth";
 import {
   baseChangePayloadSchema,
-  botReviewPayloadSchema,
   checkRunPayloadSchema,
   checkSuitePayloadSchema,
   issueCommentPayloadSchema,
@@ -34,14 +33,9 @@ import {
   handleIssueComment,
   handleReviewComment,
   isReviewRequestedForBot,
-  isReviewByBot,
   type HandlerResult,
 } from "./handlers";
-import {
-  concludeStuckCheck,
-  handleBotReviewChanged,
-  handlePullRequestChanged,
-} from "./ai-review-check";
+import { handlePullRequestChanged } from "./review-gate";
 import { createKvCacheStore } from "@open-inspect/shared/cache-store";
 import { toAutofixEnvelope } from "./autofix-ingress";
 
@@ -273,19 +267,6 @@ async function handleWebhook(
     log.info("webhook.handled", wideEvent);
   }
 
-  // A review session that died without posting sends no webhook of its own, so any
-  // webhook for its pull request closes an AI Review check left in progress.
-  if (p.repository && pullNumber !== undefined) {
-    try {
-      await concludeStuckCheck(env, log, p.repository, pullNumber);
-    } catch (err) {
-      log.warn("webhook.stuck_check_failed", {
-        ...wideEventBase,
-        error: err instanceof Error ? err : new Error(String(err)),
-      });
-    }
-  }
-
   // Forwarding and built-in dispatch are independent; both must run before a
   // failure reaches the waitUntil cleanup path. Use the passthrough parse so
   // nested lifecycle fields are not stripped by the summary schema.
@@ -346,7 +327,11 @@ function dispatchHandler(
         return handlePullRequestOpened(env, log, parsed.data, traceId);
       }
       // A retargeted base changes the diff just as a push does; other edits do not.
-      if (p.action === "synchronize" || (p.action === "edited" && isBaseChange(payload))) {
+      if (
+        p.action === "synchronize" ||
+        p.action === "reopened" ||
+        (p.action === "edited" && isBaseChange(payload))
+      ) {
         const parsed = pullRequestChangedPayloadSchema.safeParse(payload);
         if (!parsed.success) throw new Error(`Malformed pull_request ${p.action} payload`);
         return handlePullRequestChanged(env, log, parsed.data, traceId);
@@ -368,20 +353,6 @@ function dispatchHandler(
         const parsed = issueCommentPayloadSchema.safeParse(payload);
         if (!parsed.success) throw new Error("Malformed issue_comment created payload");
         return handleIssueComment(env, log, parsed.data, traceId);
-      }
-      return Promise.resolve({
-        outcome: "skipped",
-        skip_reason: "unsupported_action",
-      });
-    case "pull_request_review":
-      // Posting concludes the AI Review attempt; a dismissal takes its verdict back.
-      if (p.action === "submitted" || p.action === "dismissed") {
-        if (!isReviewByBot(payload, env.GITHUB_BOT_USERNAME)) {
-          return Promise.resolve({ outcome: "skipped", skip_reason: "review_not_by_bot" });
-        }
-        const parsed = botReviewPayloadSchema.safeParse(payload);
-        if (!parsed.success) throw new Error(`Malformed pull_request_review ${p.action} payload`);
-        return handleBotReviewChanged(env, log, parsed.data, traceId);
       }
       return Promise.resolve({
         outcome: "skipped",

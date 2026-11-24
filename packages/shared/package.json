@@ -122,6 +122,10 @@
       "import": "./dist/types/github-identity.js",
       "types": "./dist/types/github-identity.d.ts"
     },
+    "./types/github-review-gate": {
+      "import": "./dist/types/github-review-gate.js",
+      "types": "./dist/types/github-review-gate.d.ts"
+    },
     "./types/github-autofix": {
       "import": "./dist/types/github-autofix.js",
       "types": "./dist/types/github-autofix.d.ts"

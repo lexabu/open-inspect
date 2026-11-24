@@ -83,44 +83,64 @@ default, and any review the bot submits on them can only comment.
 ## AI Review Check
 
 With the `mergeGate` setting on, the App posts a check run named `AI Review` on each pull request's
-head commit. It passes when the bot's review of that exact commit approves. The setting is `"off"`
-(the default), `"shadow"` or `"required"`, set through the integration settings API, globally or per
-repository.
+head commit. It passes when the platform's reviewers approve exactly that commit. The setting is
+`"off"` (the default), `"shadow"` or `"required"`, set through the integration settings API,
+globally or per repository.
 
 | Event                                       | What the check does                                                                                          |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| PR opened, or marked ready for review       | The opening review runs and the check is in progress.                                                        |
-| The bot's review lands                      | Once every configured reviewer has posted on the commit: success if all approve, otherwise not approved.     |
+| PR opened, or marked ready for review       | A review starts and the check is in progress.                                                                |
+| Every reviewer session has finished         | Success if all approve; otherwise not approved, or unfinished if a session failed or gave no verdict.        |
 | New commits                                 | No review runs. The check asks for one: "Re-run the AI review before merging", with a **Review now** button. |
 | Base-branch update, PR's own diff unchanged | The last verdict carries forward to the new head.                                                            |
-| Base branch changed to another branch       | The verdict is dropped and the check asks for a review.                                                      |
-| The bot's review is dismissed               | The check is concluded again without that reviewer's approval.                                               |
+| Base branch changed, or PR reopened         | The verdict is dropped and the check asks for a review.                                                      |
 | **Re-run**, **Re-run all**, **Review now**  | Reviews the head commit for whoever clicked, if they may trigger the bot. Draft PRs are skipped.             |
 
 In `shadow` mode a missing or unfavourable verdict concludes `neutral`, which never blocks a merge.
 In `required` mode it concludes `failure`, or `action_required` when no review covers the head, so
 the check can be made a required status check.
 
-**What counts as an approval.** Before a review starts, the bot records an attempt for that pull
-request and commit and gives each reviewer session a one-time marker to put in its review. Only the
-first review carrying each reviewer's marker counts, so a review the bot posts for a comment request
-(for example "approve this PR") never passes the check. A reviewer approves with an `APPROVED`
-review, or with a comment-only review whose last line is the approve marker. A review that requests
-changes never approves. Each verdict is read once, when the review is first seen: editing a review
-afterwards changes nothing, and dismissing or deleting it takes its approval away.
+### How a verdict is reached
 
-A check run belongs to a commit, not to a pull request. When two open pull requests have the same
-head commit, the check asks for a review instead of passing, and a verdict is never carried forward
-or overridden there.
+The GitHub bot decides who may ask for a review. Everything after that happens in the control plane:
 
-**Carry-forward.** A new head keeps the last verdict when the pull request's diff against its base
-is the one that was reviewed: same files, same hunks and context, same binary files and file modes.
-Only the positions of hunks and the blob ids of text files are ignored, since a base-branch update
-moves them.
+- **One attempt per head.** A review is an attempt: one session per configured reviewer, for one
+  head commit of one pull request. Starting one is a single database write that refuses a second
+  attempt on the same head, so repeated clicks and repeated deliveries start one review. A review of
+  a newer head, an override, or a base change replaces a running attempt, whose check run is closed
+  as "Superseded".
+- **Reviewer sessions nobody can steer.** Each session is held by the platform: it is private, has
+  no owner and no team, and is not listed. Nobody, the pull request's author included, can read its
+  prompt or events, send it a message, use its sandbox, add collaborators or change its visibility.
+  A workspace Owner can read it, and that read is audited.
+- **The verdict comes from the session, not from GitHub.** A reviewer still submits its GitHub
+  review for people to read, and ends its last message with a small JSON verdict (`approve` or
+  `request_changes`, with a one-line summary). When the session finishes, the control plane reads
+  that verdict from the session's own events. Review bodies on GitHub are never parsed: editing,
+  dismissing or copying a review changes nothing about the check.
+- **All reviewers must approve.** The check concludes when every session of the attempt has
+  finished. A session that fails, runs past 90 minutes, or ends without a well-formed verdict makes
+  the attempt unfinished: `failure` when required, `neutral` in shadow, with **Re-run** to try
+  again.
+- **An approval passes only the pull request that was reviewed.** At the moment of concluding, the
+  pull request must still have the reviewed head and base branch. If the base branch moved on, the
+  diff must hash the same as the one reviewed. And the pull request must be the only open one on
+  that head commit: a check run belongs to a commit, so a pass would show on every pull request that
+  shares it. If GitHub cannot confirm any of this, the check asks for a review instead of passing.
 
-**Override.** Someone with write access who is not the pull request's author can pass the head's
-check with a PR comment on a line of its own that names the head commit (seven or more characters)
-and gives a reason. Both are recorded on the check:
+### Carry-forward
+
+A new head keeps the last verdict when the pull request's diff against the same base branch is the
+one that was reviewed: same files, same hunks and context, same binary files and file modes. Only
+the positions of hunks and the blob ids of text files are ignored, since a base-branch update moves
+them. A diff in which one file has two hunks that read the same is never carried forward, because
+without positions they cannot be told apart.
+
+### Override
+
+Someone with write access who is not the pull request's author can pass the head's check with a PR
+comment on a line of its own that names the head commit (seven or more characters) and gives a
+reason. Both are recorded on the check:
 
 ```text
 @my-app override 3f9c2ab reviewer misread the migration; verified by hand
@@ -130,65 +150,35 @@ The override applies only if the commit it names is still the head; otherwise th
 the current head. A comment that mentions the bot and "override" in any other form is an ordinary
 request to the bot. A new review of the same commit replaces the override.
 
-**If a review never posts.** A review session that ends without posting sends nothing to GitHub. The
-next webhook for that pull request (a comment, a push, a review) concludes a check that has been in
-progress for more than 30 minutes as unfinished, and it can then be re-run. If the review posts
-after all, the check is concluded from it.
+### Permissions
 
-**Permissions.** The check needs the App permission **Checks: Read and write**. GitHub sends an App
-with that permission the **Check run** and **Check suite** events for its own checks, including
-**Re-run** and **Review now**, without a separate event subscription. Only the GitHub bot's own
-token writes checks: tokens issued to sandboxes and sessions are limited to reading checks and
-commit statuses, so a session cannot post or change a merge-gate result.
+The check needs the App permission **Checks: Read and write**. GitHub sends an App with that
+permission the **Check run** and **Check suite** events for its own checks, including **Re-run** and
+**Review now**, without a separate event subscription.
 
-**Rollout.**
+Check runs are written by the control plane, with a token minted for that purpose alone: it can
+write checks and read pull requests on the one repository, and nothing else. Tokens issued to
+sandboxes and sessions are limited to reading checks and commit statuses, so no session, a reviewer
+session included, can post or change a merge-gate result.
+
+### What the check does not prove
+
+The reviewers are AI models reading code that the pull request's author wrote. Text in the pull
+request can try to talk a reviewer into approving, and no AI gate can rule that out. The check shows
+that the platform's reviewers, unsteered by any person, reported "approve" for exactly this diff. It
+is one signal next to the required human approval, not a replacement for it.
+
+### Rollout
 
 - Before switching a repository from `shadow` to `required`, re-run the check on its open pull
   requests. A check concluded in shadow mode is `neutral`, which GitHub accepts for a required
   check; it only becomes `failure` or `action_required` when it is concluded again.
+- Reviewer sessions review the pull request's repository alone; a default environment with further
+  repositories is not used for them.
 - The earlier `reviewOnApproval` setting is gone. Stored settings that still hold it are read as if
   it were absent, for one release; migration `0098` removes it. Before rolling back to a version
   without `mergeGate`, remove `mergeGate` from the stored GitHub settings: that version rejects
   settings it does not know.
-
-------------------------------------------- |
-------------------------------------------------------------------------------------------------------------
-
-| | PR opened, or marked ready for review | The opening review runs and the check is in progress. |
-| The bot's review lands | Once every configured reviewer has posted on the commit: success if all
-approve, otherwise not approved. | | New commits | No review runs. The check asks for one: "Re-run
-the AI review before merging", with a **Review now** button. | | Base-branch update, PR's own diff
-unchanged | The last verdict carries forward to the new head. | | Base branch changed to another
-branch | The verdict stays only if the diff is the one it covers; otherwise the check asks for a
-review. | | **Re-run** or **Review now** | Reviews the head commit for whoever clicked, if they may
-trigger the bot. |
-
-In `shadow` mode a missing or unfavourable verdict concludes `neutral`, which never blocks a merge.
-In `required` mode it concludes `failure`, or `action_required` when no review covers the head, so
-the check can be made a required status check. An approve verdict is an `APPROVED` review, or a
-comment-only review that states approve.
-
-Only the reviews of the run the check started count. Each reviewer session is given a one-time
-marker to put in its review, so a review the bot posts for a comment request (for example "approve
-this PR") never passes the check.
-
-**Override.** Someone with write access who is not the pull request's author can pass the head's
-check with a PR comment, and the reason and their name are recorded on the check:
-
-```text
-@my-app override reviewer misread the migration; verified by hand
-```
-
-A new review of the same commit replaces the override.
-
-**If a review never posts.** A review session that ends without posting sends nothing to GitHub. The
-next webhook for that pull request (a comment, a push, a review) concludes a check that has been in
-progress for more than 30 minutes as unfinished, and it can then be re-run. A review that posts
-after that is not counted.
-
-The check needs the App permission **Checks: Read and write**. GitHub sends an App with that
-permission the **Check run** events for its own checks, including **Re-run** and **Review now**,
-without a separate event subscription.
 
 ---
 

@@ -2,25 +2,14 @@
  * `@bot override <commit> <reason>`: someone with write access who did not author the
  * pull request passes the head's AI Review check, on the record.
  */
+import { createKvCacheStore } from "@open-inspect/shared/cache-store";
 import { botHandle, containsBotMention } from "@open-inspect/shared/github-mention";
 import { escapeRegExp } from "@open-inspect/shared/regex";
 import type { Env } from "./types";
 import type { Logger } from "./logger";
 import { checkSenderPermission, postIssueComment, postReaction } from "./github-auth";
-import { hashPullRequestDiff } from "./ai-review-diff";
-import {
-  deleteAttempt,
-  openGate,
-  overrideHint,
-  postCheck,
-  processed,
-  readPullRequest,
-  sharedHeadReason,
-  short,
-  skipped,
-  writeVerdict,
-  type Repository,
-} from "./ai-review-gate";
+import { mergeGateEnabled, repositoryClient, type GateRepository } from "./review-gate";
+import { requestGateOverride } from "./review-gate-client";
 import type { HandlerResult } from "./session-startup";
 
 const MAX_OVERRIDE_REASON_LENGTH = 1_000;
@@ -71,7 +60,7 @@ export async function handleOverrideComment(
   log: Logger,
   traceId: string,
   params: {
-    repository: Repository;
+    repository: GateRepository;
     pullNumber: number;
     commentId: number;
     sender: { login: string; type?: string };
@@ -79,47 +68,32 @@ export async function handleOverrideComment(
   }
 ): Promise<HandlerResult | null> {
   const { repository, pullNumber, sender, command } = params;
-  const gate = await openGate(env, log, repository);
-  if (!gate) return null;
+  if (!(await mergeGateEnabled(env, log, repository))) return null;
+  const skipped = (skip_reason: string): HandlerResult => ({ outcome: "skipped", skip_reason });
   // Another bot gets no reply: two bots answering each other would loop.
   if (sender.type === "Bot") return skipped("override_not_authorized");
 
   // Each comment overrides once, however often its webhook is delivered.
-  const appliedKey = `ai-review:override:${gate.repo}#${params.commentId}`;
-  if ((await gate.store.get(appliedKey)) !== null) return skipped("override_already_applied");
+  const store = createKvCacheStore(env.GITHUB_KV);
+  const fullName = `${repository.owner.login}/${repository.name}`.toLowerCase();
+  const appliedKey = `ai-review:override:${fullName}#${params.commentId}`;
+  if ((await store.get(appliedKey)) !== null) return skipped("override_already_applied");
 
-  const { token, userAgent, repoUrl } = gate.client;
-  const meta = {
-    trace_id: traceId,
-    repo: gate.repo,
-    pull_number: pullNumber,
-    sender: sender.login,
-  };
+  const { token, userAgent, repoUrl } = await repositoryClient(env, repository);
+  const meta = { trace_id: traceId, repo: fullName, pull_number: pullNumber, sender: sender.login };
   const refuse = async (skip_reason: string, reply: string): Promise<HandlerResult> => {
     const commentsUrl = `${repoUrl}/issues/${pullNumber}/comments`;
     if (!(await postIssueComment(token, commentsUrl, reply, userAgent))) {
-      log.warn("check.override_reply_failed", { ...meta, skip_reason });
+      log.warn("review_gate.override_reply_failed", { ...meta, skip_reason });
     }
-    log.info("check.override_refused", { ...meta, skip_reason });
+    log.info("review_gate.override_refused", { ...meta, skip_reason });
     return skipped(skip_reason);
   };
 
   if (!command.reason) {
-    return refuse("override_missing_reason", `An override needs a reason: ${overrideHint(env)}.`);
-  }
-  const pr = await readPullRequest(gate, pullNumber);
-  if (pr.state !== "open") return skipped("pr_not_open");
-  const headSha = pr.head.sha;
-  if (!headSha.startsWith(command.commit)) {
     return refuse(
-      "override_wrong_commit",
-      `\`${command.commit}\` is not the head of this pull request. The head is \`${short(headSha)}\`; an override applies only to the commit it names.`
-    );
-  }
-  if (sender.login.toLowerCase() === pr.user.login.toLowerCase()) {
-    return refuse(
-      "override_by_author",
-      "The author of a pull request can't override its AI Review check."
+      "override_missing_reason",
+      `An override needs a reason: \`@${botHandle(env.GITHUB_BOT_USERNAME)} override <commit> <reason>\`.`
     );
   }
   const permission = await checkSenderPermission(
@@ -136,36 +110,27 @@ export async function handleOverrideComment(
       "Only someone with write access to this repository can override the AI Review check."
     );
   }
-  const shared = await sharedHeadReason(gate, pullNumber, headSha);
-  if (shared !== null)
-    return refuse("override_shared_head", `${shared} The check can't be overridden.`);
 
-  const summary = `@${sender.login} overrode the AI Review check on commit \`${short(headSha)}\`.\n\nReason: ${command.reason}`;
-  // A new check run, and no attempt left to conclude: a review still in flight on this
-  // head can no longer change the check.
-  await deleteAttempt(gate, pullNumber);
-  await postCheck(gate, pullNumber, headSha, {
-    status: "completed",
-    conclusion: "success",
-    output: { title: `Overridden by @${sender.login}`, summary },
-    reviewAction: false,
+  const response = await requestGateOverride(env, traceId, {
+    repository: { owner: repository.owner.login, name: repository.name },
+    pullNumber,
+    commit: command.commit,
+    reason: command.reason,
+    overriddenBy: sender.login,
   });
-  const diffHash = await hashPullRequestDiff(gate.client, pr.base.sha, headSha);
-  await writeVerdict(gate, pullNumber, {
-    sha: headSha,
-    reviewedSha: headSha,
-    baseRef: pr.base.ref,
-    baseSha: pr.base.sha,
-    diffHash,
-    approved: true,
-    summary,
-    attemptId: null,
-  });
-  await gate.store.put(appliedKey, headSha, { ttlMs: OVERRIDE_RECORD_TTL_MS });
+  if (response.outcome === "refused") {
+    const skip_reason =
+      response.reason === "pr_not_open" || response.reason === "merge_gate_off"
+        ? response.reason
+        : `override_${response.reason}`;
+    return response.detail ? refuse(skip_reason, response.detail) : skipped(skip_reason);
+  }
+
+  await store.put(appliedKey, response.headSha, { ttlMs: OVERRIDE_RECORD_TTL_MS });
   const reactionsUrl = `${repoUrl}/issues/comments/${params.commentId}/reactions`;
   if (!(await postReaction(token, reactionsUrl, "+1", userAgent))) {
     log.warn("acknowledgment.failed", meta);
   }
-  log.info("check.overridden", { ...meta, head_sha: headSha });
-  return processed("check_overridden");
+  log.info("review_gate.overridden", { ...meta, head_sha: response.headSha });
+  return { outcome: "processed", sessions: [], handler_action: "check_overridden" };
 }

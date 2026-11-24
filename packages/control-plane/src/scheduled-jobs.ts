@@ -17,6 +17,7 @@
 import { checkAutofixQueueHealth } from "./autofix/queue-health";
 import { SessionIndexStore } from "./db/session-index";
 import type { SqlDatabase } from "./db/sql-database";
+import { createReviewGate } from "./github-review/factory";
 import { IMAGE_BUILD_SCHEDULER_CRON, runImageBuildScheduler } from "./image-builds/scheduler";
 import type { CorrelationContext, Logger } from "./logger";
 import type { BackgroundTasks } from "./platform-ports";
@@ -58,6 +59,11 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     async run({ env, db, backgroundTasks, log }) {
       backgroundTasks.submit(() => checkAutofixQueueHealth(env, log), {
         name: "autofix_queue_health",
+      });
+      // Concludes AI Review attempts that completion alone left open: a failed check
+      // write, or reviewer sessions that never reported.
+      backgroundTasks.submit(() => createReviewGate(env, db).recover(), {
+        name: "github_review_recovery",
       });
       // The tick runs both the recovery sweep (orphaned/timed-out runs) and
       // processes overdue automations.

@@ -1,5 +1,8 @@
 import { encodeRepositoryPathSegments } from "@open-inspect/shared/types/repositories";
-import { ADVISORY_APPROVE_MARKER } from "@open-inspect/shared/github-review-verdict";
+import {
+  ADVISORY_APPROVE_MARKER,
+  REVIEW_VERDICT_INSTRUCTIONS,
+} from "@open-inspect/shared/github-review-verdict";
 
 /**
  * The closing section for comment-only repositories. It comes after any custom
@@ -103,8 +106,8 @@ export function buildCodeReviewPrompt(params: {
   baseSha: string;
   /** A review asked for again on the head, right before merge. */
   preMerge?: boolean;
-  /** A hidden line the review body must carry for the AI Review check to count it. */
-  runMarker?: string | null;
+  /** The review feeds the AI Review check: the session must end with a verdict the platform reads. */
+  reportVerdict?: boolean;
 }): string {
   const {
     owner,
@@ -123,7 +126,7 @@ export function buildCodeReviewPrompt(params: {
     headSha,
     baseSha,
     preMerge = false,
-    runMarker = null,
+    reportVerdict = false,
   } = params;
   // Reviewers share one GitHub App identity, so a later APPROVE would clear an
   // earlier REQUEST_CHANGES; with several reviewers each one only comments.
@@ -215,14 +218,13 @@ ${buildIndependentReviewerSection(reviewer)}${buildPreMergeSection(preMerge, hea
 }
 JSON
 
-   ${reviewEventGuidance}${
-     runMarker
-       ? `\n   Put this line in the review body exactly as written, on a line of its own, above any\n   verdict marker line. The AI Review check counts only a review that carries it:\n   ${runMarker}`
-       : ""
-   }
+   ${reviewEventGuidance}
 
 ${buildCustomInstructionsSection(codeReviewInstructions)}
-${buildCommentOnlyRule(commentOnlyReviews)}${buildCommentGuidelines(isPublic)}`;
+${buildCommentOnlyRule(commentOnlyReviews)}${buildCommentGuidelines(isPublic)}${
+    // Last, so nothing above it, the repository's own instructions included, comes after.
+    reportVerdict ? `\n## Verdict for the AI Review check\n${REVIEW_VERDICT_INSTRUCTIONS}\n` : ""
+  }`;
 }
 
 export function buildCommentActionPrompt(params: {

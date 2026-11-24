@@ -7,7 +7,6 @@ vi.mock("../src/github-auth", () => ({
   postReaction: vi.fn().mockResolvedValue(true),
   postIssueComment: vi.fn().mockResolvedValue(true),
   checkSenderPermission: vi.fn().mockResolvedValue({ hasPermission: true }),
-  listPullRequestReviews: vi.fn().mockResolvedValue([]),
   getPullRequest: vi.fn(),
 }));
 

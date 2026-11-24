@@ -19,6 +19,7 @@ import { channelBindingRoutes } from "./channel-bindings";
 import { commitSigningRoutes } from "./commit-signing";
 import { environmentSecretsRoutes } from "./environment-secrets";
 import { environmentRoutes } from "./environments";
+import { githubReviewGateRoutes } from "./github-review-gate";
 import { githubRoutingRoutes } from "./github-route";
 import { healthRoutes } from "./health";
 import { imageBuildRoutes } from "./image-builds";
@@ -128,6 +129,7 @@ export const catalog: readonly RouteModule[] = [
 
   // Read-only GitHub bot routing hints
   githubRoutingRoutes,
+  githubReviewGateRoutes,
 
   // Bot actor enrollment with an attested profile
   actorRoutes,

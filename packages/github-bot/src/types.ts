@@ -52,6 +52,5 @@ export type {
   PullRequestChangedPayload,
   ReviewCommentPayload,
   ReviewRequestedPayload,
-  BotReviewPayload,
   CheckSuitePayload,
 } from "./payload-schemas";

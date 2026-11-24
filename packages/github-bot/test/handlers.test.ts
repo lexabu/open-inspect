@@ -15,7 +15,6 @@ vi.mock("../src/github-auth", async (importOriginal) => ({
   generateInstallationToken: vi.fn().mockResolvedValue("test-installation-token"),
   postReaction: vi.fn().mockResolvedValue(true),
   checkSenderPermission: vi.fn().mockResolvedValue({ hasPermission: true }),
-  listPullRequestReviews: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../src/utils/integration-config", () => ({

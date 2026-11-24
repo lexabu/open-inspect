@@ -366,6 +366,39 @@ async function getInstallationTokenWithMetadata(
   return token;
 }
 
+/**
+ * What the AI Review merge gate needs on a pull request's repository: to write check
+ * runs, and to read pull requests and their diffs. Nothing else, so a leak of this
+ * token cannot push code or post as the App.
+ */
+const REVIEW_GATE_PERMISSIONS = {
+  checks: "write",
+  pull_requests: "read",
+  contents: "read",
+  metadata: "read",
+} as const;
+
+/**
+ * A token for the AI Review merge gate on one repository. It is the only token this
+ * control plane mints that can write check runs; it is used by the gate itself, never
+ * cached with session tokens and never handed to a sandbox.
+ */
+export async function mintReviewGateToken(
+  config: GitHubAppConfig,
+  userAgent: string,
+  repositoryId: number
+): Promise<string> {
+  const jwt = await generateAppJwt(config.appId, config.privateKey);
+  const minted = await mintInstallationToken(
+    jwt,
+    config.installationId,
+    userAgent,
+    repositoryCredentialScope([repositoryId]),
+    { ...REVIEW_GATE_PERMISSIONS }
+  );
+  return minted.token;
+}
+
 export async function getInstallationTokenCacheKey(
   config: GitHubAppConfig,
   scope: TokenScope

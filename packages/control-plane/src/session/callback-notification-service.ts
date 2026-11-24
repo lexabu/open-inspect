@@ -17,6 +17,7 @@ import {
 import { callbackSigningSecret, type CallbackDestination } from "../auth/service/callback-signing";
 import { slackPostGate, type SlackPostScope } from "../authorization/slack-post-gate";
 import type { Logger } from "../logger";
+import { GITHUB_REVIEW_CALLBACK_SOURCE } from "../github-review/callback";
 import { deliverWithRetry, retryDelivery } from "./callback-delivery";
 import { notifyLinearStarted } from "./linear-start-callback";
 import type { SessionRow } from "./types";
@@ -46,6 +47,14 @@ export interface CallbackServiceEnv {
 
 export type AutomationRunCompletionHandler = (completion: AutomationRunCompletion) => Promise<void>;
 
+/** A reviewer session of the GitHub AI Review gate finished its prompt. */
+interface GitHubReviewCompletion {
+  sessionId: string;
+  messageId: string;
+  success: boolean;
+}
+export type GitHubReviewCompletionHandler = (completion: GitHubReviewCompletion) => Promise<void>;
+
 /**
  * Dependencies injected into CallbackNotificationService.
  */
@@ -57,6 +66,7 @@ export interface CallbackServiceDeps {
   log: Logger;
   getSessionId: () => string;
   completeAutomationRun?: AutomationRunCompletionHandler;
+  completeGitHubReview?: GitHubReviewCompletionHandler;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -128,6 +138,7 @@ export class CallbackNotificationService {
   private readonly getSessionId: () => string;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly completeAutomationRun: AutomationRunCompletionHandler | undefined;
+  private readonly completeGitHubReview: GitHubReviewCompletionHandler | undefined;
   private _lastToolCallCallbackTs = 0;
   /**
    * When Slack's activity indicator was last (re)asserted for this session, by
@@ -147,6 +158,7 @@ export class CallbackNotificationService {
     this.log = deps.log;
     this.getSessionId = deps.getSessionId;
     this.completeAutomationRun = deps.completeAutomationRun;
+    this.completeGitHubReview = deps.completeGitHubReview;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
@@ -316,6 +328,13 @@ export class CallbackNotificationService {
       }
 
       const rawContext: unknown = JSON.parse(message.callback_context);
+      // A reviewer session of the AI Review gate reports to the gate, in process.
+      if (isRecord(rawContext) && rawContext.source === GITHUB_REVIEW_CALLBACK_SOURCE) {
+        source = GITHUB_REVIEW_CALLBACK_SOURCE;
+        result = await this.notifyGitHubReviewComplete(callbackSessionId, messageId, success);
+        return;
+      }
+
       source =
         isRecord(rawContext) && rawContext.source === "automation"
           ? "automation"
@@ -525,6 +544,40 @@ export class CallbackNotificationService {
     };
   }
 
+  /** Hand a reviewer session's completion to the AI Review gate. */
+  private async notifyGitHubReviewComplete(
+    sessionId: string,
+    messageId: string,
+    success: boolean
+  ): Promise<CallbackDeliveryResult> {
+    const completeGitHubReview = this.completeGitHubReview;
+    if (!completeGitHubReview) {
+      return { delivered: false, attempts: 0, rejectReason: "no_binding" };
+    }
+    const delivery = await retryDelivery<void, never>(
+      async () => ({
+        outcome: "delivered",
+        value: await completeGitHubReview({ sessionId, messageId, success }),
+      }),
+      this.sleep,
+      ({ attempt, error: deliveryError }) => {
+        this.log.warn("callback.complete_delivery_attempt_failed", {
+          message_id: messageId,
+          session_id: sessionId,
+          source: GITHUB_REVIEW_CALLBACK_SOURCE,
+          attempt,
+          ...(deliveryError !== undefined
+            ? { error: deliveryError instanceof Error ? deliveryError : String(deliveryError) }
+            : {}),
+        });
+      },
+      // As for automations: the gate's D1 and GitHub calls cannot be aborted, so a
+      // timeout would start a second conclusion beside the first.
+      { attemptTimeoutMs: null }
+    );
+    return { delivered: delivery.outcome === "delivered", attempts: delivery.attempts };
+  }
+
   /**
    * Re-assert Slack's assistant-thread activity indicator while a turn is
    * still in flight.
@@ -729,15 +782,16 @@ export class CallbackNotificationService {
     }
     const source = message.source ?? null;
 
-    // Automation runs have no tool-call progress consumer. Skip rather than
-    // spam best-effort bot callbacks.
-    if (source === "automation") {
+    // Automation runs and GitHub review-gate sessions have no tool-call progress
+    // consumer. Skip rather than spam best-effort bot callbacks; a gate session's tool
+    // calls must not leave the control plane at all.
+    if (source === "automation" || source === "github") {
       this.log.debug("callback.tool_call", {
         message_id: messageId,
         source,
         tool,
         outcome: "skipped",
-        skip_reason: "automation_no_consumer",
+        skip_reason: `${source}_no_consumer`,
       });
       return;
     }

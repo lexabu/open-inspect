@@ -320,6 +320,19 @@ function artifactCreatedDuringMessage(artifact: ArtifactRow, message: MessageRow
   return artifact.created_at >= start && artifact.created_at <= end;
 }
 
+/**
+ * The text of the agent's final response to a message, or null when the message has more
+ * events than are read: its last words may then lie beyond them.
+ */
+export function finalResponseText(
+  source: FinalResponseEventPageSource,
+  messageId: string
+): string | null {
+  const { eventRows, eventLimitReached } = collectFinalResponseEventRows(source, messageId);
+  if (eventLimitReached) return null;
+  return buildAgentResponseFromEvents(eventRows.map(toEventResponse)).textContent;
+}
+
 function buildFinalResponse(
   message: MessageRow | null,
   eventRows: EventRow[],

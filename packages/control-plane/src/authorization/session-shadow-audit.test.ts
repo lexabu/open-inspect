@@ -18,6 +18,7 @@ const row: SessionAccessRow = {
   ownerTeamId: "team_one",
   visibility: "team",
   collaboratorIds: ["collaborator"],
+  platformHeld: false,
 };
 const viewer: SessionViewer = {
   kind: "user",

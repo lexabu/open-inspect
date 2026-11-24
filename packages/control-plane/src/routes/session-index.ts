@@ -1,3 +1,4 @@
+import { sessionAccessRow } from "../authorization/session-access-row";
 import { isWorkspaceAdmin } from "@open-inspect/shared/rbac";
 import { parseBody } from "./body";
 import { Hono } from "hono";
@@ -198,13 +199,7 @@ export async function handleListSessions(
     ...row,
     capabilities: effectiveSessionCapabilities(
       viewer,
-      {
-        id: row.id,
-        ownerUserId: row.userId ?? null,
-        ownerTeamId: row.ownerTeamId,
-        visibility: row.visibility,
-        collaboratorIds: collaborators.get(row.id) ?? [],
-      },
+      sessionAccessRow(row, collaborators.get(row.id) ?? []),
       teamsEnforcementMode(ctx, env)
     ),
   }));
@@ -368,13 +363,7 @@ async function encodeInboxPage(
   const capabilities = (row: ListSessionInboxResult["items"][number]["rootSession"]) =>
     effectiveSessionCapabilities(
       viewer,
-      {
-        id: row.id,
-        ownerUserId: row.userId,
-        ownerTeamId: row.ownerTeamId,
-        visibility: row.visibility,
-        collaboratorIds: collaborators.get(row.id) ?? [],
-      },
+      sessionAccessRow(row, collaborators.get(row.id) ?? []),
       mode
     );
   return sessionInboxPageSchema.parse({

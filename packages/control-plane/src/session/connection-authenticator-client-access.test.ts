@@ -29,6 +29,7 @@ describe("client session access", () => {
     ownerTeamId: "team-b",
     visibility: "team",
     collaboratorIds: [],
+    platformHeld: false,
   };
   const member: UserViewer = {
     kind: "user",

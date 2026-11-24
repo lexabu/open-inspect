@@ -1,3 +1,4 @@
+import { sessionAccessRow } from "../authorization/session-access-row";
 import { parseBody } from "./body";
 import { Hono } from "hono";
 import { admit } from "../routing/admit";
@@ -100,17 +101,7 @@ function sandboxChildAccess(
       !collaboratorIds.includes(viewer.userId)
     )
       return false;
-    return checkSessionAccess(
-      viewer,
-      {
-        id: child.id,
-        ownerUserId: child.userId ?? null,
-        ownerTeamId: child.ownerTeamId,
-        visibility: child.visibility,
-        collaboratorIds,
-      },
-      action
-    ).allowed;
+    return checkSessionAccess(viewer, sessionAccessRow(child, collaboratorIds), action).allowed;
   };
 }
 
