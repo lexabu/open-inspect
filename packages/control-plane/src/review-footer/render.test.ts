@@ -2,14 +2,12 @@ import { ADVISORY_APPROVE_MARKER } from "@open-inspect/shared/github-review-verd
 import { describe, expect, it } from "vitest";
 import {
   applyFooter,
-  memoryPhrase,
   renderFooterLine,
   REVIEW_FOOTER_MARKER,
-  type MemoryActivity,
+  type MemorySourceActivity,
 } from "./render";
 
-const NO_MEMORY: MemoryActivity = {
-  label: "Hindsight memory",
+const IDLE: MemorySourceActivity = {
   searched: false,
   factsUsed: 0,
   updated: 0,
@@ -24,7 +22,7 @@ describe("renderFooterLine", () => {
         kind: "review",
         modelId: "amazon-bedrock/openai.gpt-6.2-sol",
         totalCostUsd: 0.0512,
-        memory: { ...NO_MEMORY, searched: true, factsUsed: 2 },
+        memory: { hindsight: { ...IDLE, searched: true, factsUsed: 2 }, builtIn: null },
       })
     ).toBe(
       "Findings via GPT-6.2 Sol · Hindsight memory: searched, 2 facts used · Bedrock cost: $0.05"
@@ -59,25 +57,6 @@ describe("renderFooterLine", () => {
     expect(
       renderFooterLine({ kind: "review", modelId: "acme/x", totalCostUsd: cost, memory: null })
     ).toBe(`Findings via acme/x · Cost: ${shown}`);
-  });
-});
-
-describe("memoryPhrase", () => {
-  it.each<[Partial<MemoryActivity>, string]>([
-    [{}, "Hindsight memory: not used"],
-    [{ searched: true }, "Hindsight memory: searched"],
-    [{ searched: true, factsUsed: 1 }, "Hindsight memory: searched, 1 fact used"],
-    [
-      { searched: true, factsUsed: 3, updated: 1 },
-      "Hindsight memory: searched, 3 facts used, updated",
-    ],
-    [{ updated: 2 }, "Hindsight memory: updated"],
-    [{ failed: 1 }, "Hindsight memory: unavailable"],
-    [{ searched: true, failed: 1 }, "Hindsight memory: searched"],
-    [{ label: "Memory", proposed: 1 }, "Memory: 1 fact proposed"],
-    [{ label: "Memory", factsUsed: 2, proposed: 2 }, "Memory: 2 facts used, 2 facts proposed"],
-  ])("renders %j as %s", (activity, phrase) => {
-    expect(memoryPhrase({ ...NO_MEMORY, ...activity })).toBe(phrase);
   });
 });
 

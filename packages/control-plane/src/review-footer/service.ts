@@ -4,16 +4,12 @@
  * logged and left as it was, and nothing is thrown into completion handling.
  */
 import { isBotLogin } from "@open-inspect/shared/github-mention";
+import { promptPullRequest } from "@open-inspect/shared/github-session-prompt";
 import type { Logger } from "../logger";
 import type { MessageRow, SessionRow } from "../session/types";
 import type { FooterGitHub } from "./github";
 import { applyFooter, renderFooterLine } from "./render";
-import {
-  countMemoryActivity,
-  findSessionPosts,
-  type SessionPost,
-  type ToolCallEvent,
-} from "./session-activity";
+import { TurnActivity, type SessionPost, type ToolCallEvent } from "./session-activity";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 1_000;
@@ -31,8 +27,11 @@ interface FooterRepository {
 export interface ReviewFooterDeps {
   getSession(): SessionRow | null;
   getMessage(messageId: string): MessageRow | null;
-  /** The turn's tool calls, or null when there are too many to read them all. */
-  listToolCalls(messageId: string): ToolCallEvent[] | null;
+  /**
+   * Hands each of the turn's tool calls to `visit`, a few at a time, without keeping them.
+   * False when they are more than a bounded read can hold, so not all were visited.
+   */
+  scanToolCalls(messageId: string, visit: (call: ToolCallEvent) => void): boolean;
   /** Whether the repository has the `reviewFooter` setting on. */
   footerEnabled(repository: FooterRepository): Promise<boolean>;
   /** Names of the Hindsight MCP servers the repository's sessions get. */
@@ -88,18 +87,28 @@ export class ReviewFooter {
       id: session.repo_id,
       fullName: `${session.repo_owner}/${session.repo_name}`.toLowerCase(),
     };
+    // Only posts on the pull request the session was started for are its to footer.
+    const pull = promptPullRequest(message.content);
+    if (!pull || `${pull.owner}/${pull.repo}`.toLowerCase() !== repository.fullName) {
+      return skip("no_pull_request");
+    }
     if (!(await this.deps.footerEnabled(repository))) {
       log.debug("review_footer", { message_id: messageId, outcome: "skipped", reason: "disabled" });
       return;
     }
     const github = this.deps.github(repository);
     if (!github) return skip("github_app_not_configured");
-    const toolCalls = this.deps.listToolCalls(messageId);
-    if (!toolCalls) return skip("too_many_tool_calls");
-    const posts = findSessionPosts(toolCalls, repository);
+    const activity = new TurnActivity(
+      { owner: repository.owner, name: repository.name, number: pull.number },
+      await this.deps.hindsightServers(repository)
+    );
+    if (!this.deps.scanToolCalls(messageId, (call) => activity.add(call))) {
+      return skip("tool_calls_over_budget");
+    }
+    const posts = activity.posts();
     if (posts.length === 0) return skip("no_post");
 
-    const memory = countMemoryActivity(toolCalls, await this.deps.hindsightServers(repository));
+    const memory = activity.memory();
     const modelId = message.model ?? session.model;
     const outcomes: Record<string, PostOutcome> = {};
     for (const post of posts) {

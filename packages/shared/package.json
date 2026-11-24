@@ -74,6 +74,10 @@
       "import": "./dist/github-review-verdict.js",
       "types": "./dist/github-review-verdict.d.ts"
     },
+    "./github-session-prompt": {
+      "import": "./dist/github-session-prompt.js",
+      "types": "./dist/github-session-prompt.d.ts"
+    },
     "./regex": {
       "import": "./dist/regex.js",
       "types": "./dist/regex.d.ts"

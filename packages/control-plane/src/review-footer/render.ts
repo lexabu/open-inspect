@@ -10,19 +10,25 @@ import { isOpenCodeBedrockModel } from "../sandbox/bedrock-env";
 /** Marks the footer, so a re-run replaces it instead of adding a second one. */
 export const REVIEW_FOOTER_MARKER = "<!-- open-inspect:footer -->";
 
-/** What a session did with memory, counted from its own tool calls. */
-export interface MemoryActivity {
-  /** "Hindsight memory" when a Hindsight server took part, otherwise the built-in "Memory". */
-  label: "Hindsight memory" | "Memory";
+/** What one memory source did in a turn, counted from its tool calls' validated results. */
+export interface MemorySourceActivity {
   searched: boolean;
-  /** Facts returned to the agent: Hindsight recall results plus built-in memory reads. */
+  /** Facts returned to the agent: Hindsight recall results, or built-in reads of a fact. */
   factsUsed: number;
   /** Facts saved as active (Hindsight retain, or a built-in write that took effect). */
   updated: number;
   /** Built-in writes that await approval. */
   proposed: number;
-  /** Memory calls that ended in an error. */
+  /** Calls that failed or returned something other than a result. */
   failed: number;
+}
+
+/** Memory per source; a source is null when it does not apply to the session. */
+export interface MemoryActivity {
+  /** Set whenever a Hindsight server is configured, called or not. */
+  hindsight: MemorySourceActivity | null;
+  /** Set when the turn called a built-in memory tool. */
+  builtIn: MemorySourceActivity | null;
 }
 
 export type PostKind = "review" | "comment";
@@ -47,15 +53,24 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-export function memoryPhrase(memory: MemoryActivity): string {
+function sourcePhrase(label: string, activity: MemorySourceActivity): string {
   const parts = [
-    ...(memory.searched ? ["searched"] : []),
-    ...(memory.factsUsed > 0 ? [`${plural(memory.factsUsed, "fact")} used`] : []),
-    ...(memory.updated > 0 ? ["updated"] : []),
-    ...(memory.proposed > 0 ? [`${plural(memory.proposed, "fact")} proposed`] : []),
+    ...(activity.searched && activity.factsUsed === 0 ? ["searched, nothing relevant"] : []),
+    ...(activity.searched && activity.factsUsed > 0 ? ["searched"] : []),
+    ...(activity.factsUsed > 0 ? [`${plural(activity.factsUsed, "fact")} used`] : []),
+    ...(activity.updated > 0 ? ["updated"] : []),
+    ...(activity.proposed > 0 ? [`${plural(activity.proposed, "fact")} proposed`] : []),
   ];
-  if (parts.length > 0) return `${memory.label}: ${parts.join(", ")}`;
-  return `${memory.label}: ${memory.failed > 0 ? "unavailable" : "not used"}`;
+  if (parts.length > 0) return `${label}: ${parts.join(", ")}`;
+  return `${label}: ${activity.failed > 0 ? "unavailable" : "not used"}`;
+}
+
+/** One phrase per memory source that applies, Hindsight first. */
+export function memoryPhrases(memory: MemoryActivity): string[] {
+  return [
+    ...(memory.hindsight ? [sourcePhrase("Hindsight memory", memory.hindsight)] : []),
+    ...(memory.builtIn ? [sourcePhrase("built-in memory", memory.builtIn)] : []),
+  ];
 }
 
 export function renderFooterLine(facts: FooterFacts): string {
@@ -67,22 +82,34 @@ export function renderFooterLine(facts: FooterFacts): string {
       : name;
   return [
     `${facts.kind === "review" ? "Findings" : "Reply"} via ${model}`,
-    ...(facts.memory ? [memoryPhrase(facts.memory)] : []),
+    ...(facts.memory ? memoryPhrases(facts.memory) : []),
     `${bedrock ? "Bedrock cost" : "Cost"}: ${formatCost(facts.totalCostUsd)}`,
   ].join(" · ");
 }
 
-/** An earlier footer: the marker, its line, and the blank lines before it. */
-const EXISTING_FOOTER = new RegExp(`\\s*${REVIEW_FOOTER_MARKER}[^\\n]*(?:\\n[^\\n]*)?`, "g");
+const FOOTER_LINE = /^(?:Findings|Reply) via /;
+const FENCE = /^\s*(?:```|~~~)/;
+
+/** Whether the lines end with the marker line and one footer line, outside any code fence. */
+function endsWithFooterBlock(lines: string[]): boolean {
+  const count = lines.length;
+  if (count < 2 || lines[count - 2].trimEnd() !== REVIEW_FOOTER_MARKER) return false;
+  if (!FOOTER_LINE.test(lines[count - 1])) return false;
+  return lines.slice(0, -2).filter((text) => FENCE.test(text)).length % 2 === 0;
+}
 
 /**
- * The body with `line` as its footer, replacing any earlier footer. The footer goes last,
- * except before a trailing advisory-approval marker, which stays the body's last line.
+ * The body with `line` as its footer. A trailing advisory-approval marker line is split off
+ * first and kept last. Only a complete footer block at the very end (the marker line, then
+ * one footer line) is replaced; a marker anywhere else, in code or a quote, is body text.
  */
 export function applyFooter(body: string, line: string): string {
-  let text = body.replace(EXISTING_FOOTER, "").trimEnd();
-  const advisory = text.endsWith(ADVISORY_APPROVE_MARKER);
-  if (advisory) text = text.slice(0, -ADVISORY_APPROVE_MARKER.length).trimEnd();
-  const footer = `${REVIEW_FOOTER_MARKER}\n${line}${advisory ? `\n${ADVISORY_APPROVE_MARKER}` : ""}`;
-  return text ? `${text}\n\n${footer}` : footer;
+  const lines = body.trimEnd().split("\n");
+  const advisory = lines.at(-1)?.trim() === ADVISORY_APPROVE_MARKER;
+  if (advisory) lines.pop();
+  while (lines.length > 0 && lines.at(-1)?.trim() === "") lines.pop();
+  if (endsWithFooterBlock(lines)) lines.splice(-2);
+  const text = lines.join("\n").trimEnd();
+  const footer = [REVIEW_FOOTER_MARKER, line, ...(advisory ? [ADVISORY_APPROVE_MARKER] : [])];
+  return text ? `${text}\n\n${footer.join("\n")}` : footer.join("\n");
 }

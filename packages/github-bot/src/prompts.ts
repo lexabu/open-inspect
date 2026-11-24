@@ -1,5 +1,6 @@
 import { encodeRepositoryPathSegments } from "@open-inspect/shared/types/repositories";
 import { ADVISORY_APPROVE_MARKER } from "@open-inspect/shared/github-review-verdict";
+import { pullRequestPromptLead } from "@open-inspect/shared/github-session-prompt";
 import { REVIEW_FOCUS_AREAS, type ReviewFocus, type ReviewFocusArea } from "./comment-command";
 
 /**
@@ -219,7 +220,7 @@ export function buildCodeReviewPrompt(params: {
     content: body ?? "_No description provided._",
   });
 
-  return `You are reviewing Pull Request #${number} in ${owner}/${repo}.
+  return `${pullRequestPromptLead("reviewing", { owner, repo, number })}
 The repository has been cloned and you are on the PR head branch.
 
 ## PR Details
@@ -313,9 +314,10 @@ export function buildCommentActionPrompt(params: {
     commentOnlyReviews = false,
   } = params;
 
+  const lead = pullRequestPromptLead("working on", { owner, repo, number });
   const intro = head
-    ? `You are working on Pull Request #${number} in ${owner}/${repo}.\nThe repository has been cloned and you are on the ${head} branch.`
-    : `You are working on Pull Request #${number} in ${owner}/${repo}.`;
+    ? `${lead}\nThe repository has been cloned and you are on the ${head} branch.`
+    : lead;
 
   let prDetails = "";
   if (title || (base && head)) {
