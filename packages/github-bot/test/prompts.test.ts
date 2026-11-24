@@ -65,6 +65,8 @@ describe("buildCodeReviewPrompt", () => {
       `gh api -H "Accept: application/vnd.github.diff" repos/acme/widgets/compare/${baseParams.baseSha}...${baseParams.headSha}`
     );
     expect(opening).toContain("give no verdict");
+    expect(opening).toContain("submit no pull request review");
+    expect(opening).toContain("gh api repos/acme/widgets/issues/42/comments --method POST");
     expect(opening).toContain(`"commit_id": "${baseParams.headSha}",`);
     expect(opening).not.toContain("gh pr diff");
     expect(opening).not.toContain("## Pre-merge Review");

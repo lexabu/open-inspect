@@ -178,8 +178,11 @@ ${buildIndependentReviewerSection(reviewer)}${buildPreMergeSection(preMerge, hea
    git checkout --detach ${headSha}
    gh api -H "Accept: application/vnd.github.diff" repos/${repositoryPath}/compare/${baseSha}...${headSha}
 
-   If you cannot read that diff, do not review from anything else and give no verdict: submit a
-   COMMENT review saying the diff for commit \`${headSha}\` could not be read.
+   If you cannot read that diff, stop: do not review from anything else, give no verdict and
+   submit no pull request review (a review would mark the commit reviewed). Instead post one PR
+   conversation comment saying the diff for commit \`${headSha}\` could not be read:
+
+   gh api repos/${repositoryPath}/issues/${number}/comments --method POST -f body='<that note>'
 
 2. Review the changes thoroughly, focusing on:
    - Correctness and potential bugs
