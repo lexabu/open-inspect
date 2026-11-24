@@ -13,7 +13,7 @@ const attemptRowSchema = z
     base_sha: z.string(),
     diff_hash: z.string().nullable(),
     check_run_id: z.number().nullable(),
-    status: z.enum(["running", "concluded", "superseded"]),
+    status: z.enum(["running", "concluding", "concluded", "superseded", "abandoned"]),
     created_at: z.number(),
   })
   .transform((row) => ({
@@ -43,6 +43,7 @@ const attemptSessionRowSchema = z
     position: z.number(),
     session_id: z.string(),
     model: z.string(),
+    nonce: z.string(),
     verdict: reviewerVerdictSchema.nullable(),
     summary: z.string().nullable(),
   })
@@ -51,6 +52,7 @@ const attemptSessionRowSchema = z
     position: row.position,
     sessionId: row.session_id,
     model: row.model,
+    nonce: row.nonce,
     verdict: row.verdict,
     summary: row.summary,
   }));
@@ -87,6 +89,10 @@ export interface PullKey {
   prNumber: number;
 }
 
+/** An attempt that still holds its pull request: its sessions are working, or it is concluding. */
+const ACTIVE = "status IN ('running', 'concluding')";
+const SESSION_COLUMNS = "attempt_id, position, session_id, model, nonce, verdict, summary";
+
 const ATTEMPT_COLUMNS =
   "id, repo_owner, repo_name, repo_id, pr_number, head_sha, base_ref, base_sha, diff_hash, check_run_id, status, created_at";
 
@@ -99,7 +105,7 @@ export class ReviewGateStore {
   constructor(private readonly db: SqlDatabase) {}
 
   /**
-   * Starts an attempt unless one is already running on the same head. A running attempt
+   * Starts an attempt unless one is already active on the same head. An active attempt
    * on another head is superseded in the same transaction. Returns whether the claim
    * succeeded and the attempts it superseded.
    */
@@ -111,7 +117,7 @@ export class ReviewGateStore {
       this.db
         .prepare(
           `UPDATE github_review_attempts SET status = 'superseded', finished_at = ?
-           WHERE repo_id = ? AND pr_number = ? AND status = 'running' AND head_sha != ?`
+           WHERE repo_id = ? AND pr_number = ? AND ${ACTIVE} AND head_sha != ?`
         )
         .bind(now, attempt.repoId, attempt.prNumber, attempt.headSha),
       this.db
@@ -122,7 +128,7 @@ export class ReviewGateStore {
            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?
            WHERE NOT EXISTS (
              SELECT 1 FROM github_review_attempts
-             WHERE repo_id = ? AND pr_number = ? AND status = 'running'
+             WHERE repo_id = ? AND pr_number = ? AND ${ACTIVE}
            )`
         )
         .bind(
@@ -146,8 +152,8 @@ export class ReviewGateStore {
     };
   }
 
-  /** Supersedes the pull request's running attempt, if any, and returns it. */
-  async supersedeRunning(pull: PullKey, now: number): Promise<ReviewAttempt[]> {
+  /** Supersedes the pull request's active attempt, if any, and returns it. */
+  async supersedeActive(pull: PullKey, now: number): Promise<ReviewAttempt[]> {
     await this.supersedeStatement(pull, now).run();
     return this.supersededAt(pull, now);
   }
@@ -156,7 +162,7 @@ export class ReviewGateStore {
     return this.db
       .prepare(
         `UPDATE github_review_attempts SET status = 'superseded', finished_at = ?
-         WHERE repo_id = ? AND pr_number = ? AND status = 'running'`
+         WHERE repo_id = ? AND pr_number = ? AND ${ACTIVE}`
       )
       .bind(now, pull.repoId, pull.prNumber);
   }
@@ -175,16 +181,17 @@ export class ReviewGateStore {
   /** Records the sessions of an attempt, in reviewer order. */
   async addSessions(
     attemptId: string,
-    sessions: readonly { sessionId: string; model: string }[]
+    sessions: readonly { sessionId: string; model: string; nonce: string }[]
   ): Promise<void> {
     await this.db.batch(
       sessions.map((session, position) =>
         this.db
           .prepare(
-            `INSERT INTO github_review_attempt_sessions (attempt_id, position, session_id, model)
-             VALUES (?, ?, ?, ?)`
+            `INSERT INTO github_review_attempt_sessions
+               (attempt_id, position, session_id, model, nonce)
+             VALUES (?, ?, ?, ?, ?)`
           )
-          .bind(attemptId, position, session.sessionId, session.model)
+          .bind(attemptId, position, session.sessionId, session.model, session.nonce)
       )
     );
   }
@@ -204,11 +211,11 @@ export class ReviewGateStore {
     return row ? attemptRowSchema.parse(row) : null;
   }
 
-  async getRunningAttempt(pull: PullKey): Promise<ReviewAttempt | null> {
+  async getActiveAttempt(pull: PullKey): Promise<ReviewAttempt | null> {
     const row = await this.db
       .prepare(
         `SELECT ${ATTEMPT_COLUMNS} FROM github_review_attempts
-         WHERE repo_id = ? AND pr_number = ? AND status = 'running'`
+         WHERE repo_id = ? AND pr_number = ? AND ${ACTIVE}`
       )
       .bind(pull.repoId, pull.prNumber)
       .first();
@@ -218,7 +225,7 @@ export class ReviewGateStore {
   async listSessions(attemptId: string): Promise<ReviewAttemptSession[]> {
     const rows = await this.db
       .prepare(
-        `SELECT attempt_id, position, session_id, model, verdict, summary
+        `SELECT ${SESSION_COLUMNS}
          FROM github_review_attempt_sessions WHERE attempt_id = ? ORDER BY position`
       )
       .bind(attemptId)
@@ -226,16 +233,25 @@ export class ReviewGateStore {
     return rows.results.map((row) => attemptSessionRowSchema.parse(row));
   }
 
+  /** The reviewer session with this id, or null when it is not a reviewer session. */
+  async getSession(sessionId: string): Promise<ReviewAttemptSession | null> {
+    const row = await this.db
+      .prepare(`SELECT ${SESSION_COLUMNS} FROM github_review_attempt_sessions WHERE session_id = ?`)
+      .bind(sessionId)
+      .first();
+    return row ? attemptSessionRowSchema.parse(row) : null;
+  }
+
   /**
    * Records a session's verdict, once: a session reports when it completes, and a second
-   * report for the same session changes nothing. Returns the attempt the session belongs to.
+   * report for the same session changes nothing.
    */
   async recordSessionVerdict(
     sessionId: string,
     verdict: ReviewerVerdict,
     summary: string,
     now: number
-  ): Promise<string | null> {
+  ): Promise<void> {
     await this.db
       .prepare(
         `UPDATE github_review_attempt_sessions SET verdict = ?, summary = ?, completed_at = ?
@@ -243,11 +259,6 @@ export class ReviewGateStore {
       )
       .bind(verdict, summary, now, sessionId)
       .run();
-    const row = await this.db
-      .prepare("SELECT attempt_id FROM github_review_attempt_sessions WHERE session_id = ?")
-      .bind(sessionId)
-      .first();
-    return row ? z.object({ attempt_id: z.string() }).parse(row).attempt_id : null;
   }
 
   /** Marks every session of an attempt that has not reported as failed. */
@@ -262,9 +273,46 @@ export class ReviewGateStore {
   }
 
   /**
-   * Concludes a running attempt and, in the same transaction, stores the verdict it
-   * reached. Returns false when the attempt was no longer running: an override or a newer
-   * attempt got there first, and its state stands.
+   * Takes ownership of an attempt's conclusion: of any number of workers, and against an
+   * override or a newer attempt, exactly one gets true, and only it may write the check.
+   */
+  async beginConclusion(attemptId: string, now: number): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE github_review_attempts SET status = 'concluding', concluding_at = ?
+         WHERE id = ? AND status = 'running'`
+      )
+      .bind(now, attemptId)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  /** Gives a claimed conclusion back, so it can be tried again: the check was not written. */
+  async releaseConclusion(attemptId: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE github_review_attempts SET status = 'running', concluding_at = NULL
+         WHERE id = ? AND status = 'concluding'`
+      )
+      .bind(attemptId)
+      .run();
+  }
+
+  /** Releases conclusions claimed before `claimedBefore`: their worker died mid-way. */
+  async releaseStaleConclusions(claimedBefore: number): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE github_review_attempts SET status = 'running', concluding_at = NULL
+         WHERE status = 'concluding' AND concluding_at < ?`
+      )
+      .bind(claimedBefore)
+      .run();
+  }
+
+  /**
+   * Finishes a claimed conclusion and, in the same transaction, stores the verdict it
+   * reached. Returns false when the attempt lost ownership while its check was being
+   * written: an override, a base change or a newer attempt superseded it, and that stands.
    */
   async concludeAttempt(
     attempt: ReviewAttempt,
@@ -274,7 +322,7 @@ export class ReviewGateStore {
     const conclude = this.db
       .prepare(
         `UPDATE github_review_attempts SET status = 'concluded', finished_at = ?
-         WHERE id = ? AND status = 'running'`
+         WHERE id = ? AND status = 'concluding'`
       )
       .bind(now, attempt.id);
     if (verdict === null) return (await conclude.run()).meta.changes === 1;
@@ -379,6 +427,20 @@ export class ReviewGateStore {
         ),
     ]);
     return this.supersededAt(pull, now);
+  }
+
+  /**
+   * Gives an attempt up: its check could not be written for too long. It no longer holds
+   * the pull request, so a new review can start.
+   */
+  async abandon(attemptId: string, now: number): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE github_review_attempts SET status = 'abandoned', finished_at = ?
+         WHERE id = ? AND ${ACTIVE}`
+      )
+      .bind(now, attemptId)
+      .run();
   }
 
   /**

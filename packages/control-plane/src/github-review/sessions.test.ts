@@ -88,33 +88,39 @@ describe("reviewer sessions of the AI Review gate", () => {
     );
   });
 
-  it("prompts as the platform, and routes the session's completion to the gate", async () => {
+  it("prompts as the platform, ends the prompt with the verdict bound to the session's nonce, and routes completion to the gate", async () => {
     runtimeFetch.mockResolvedValue(Response.json({ messageId: "message-1", status: "queued" }));
 
     const messageId = await createGateSessions(env, ctx, repository).prompt(
       "session-1",
       reviewer,
-      "attempt-1"
+      "n0nce-7f3a"
     );
 
     expect(messageId).toBe("message-1");
     const [sessionId, , init] = runtimeFetch.mock.calls[0];
     expect(sessionId).toBe("session-1");
-    expect(JSON.parse(init.body)).toEqual({
-      content: "Review this pull request.",
+    const { content, ...rest } = JSON.parse(init.body);
+    expect(rest).toEqual({
       authorId: "github-review",
       canonicalUserId: null,
       source: "github",
-      callbackContext: { source: "github-review", attemptId: "attempt-1" },
-      clientRequestId: "github-review:attempt-1:session-1",
+      callbackContext: { source: "github-review" },
+      clientRequestId: "github-review:session-1",
     });
+    expect(
+      content.startsWith("Review this pull request.\n## Verdict for the AI Review check\n")
+    ).toBe(true);
+    expect(content).toContain('{"attempt": "n0nce-7f3a", "verdict": "approve"');
+    // Nothing follows the verdict instructions.
+    expect(content.trimEnd().endsWith("review you submitted.")).toBe(true);
   });
 
   it("fails the start when the session refuses its prompt", async () => {
     runtimeFetch.mockResolvedValue(new Response("nope", { status: 409 }));
 
     await expect(
-      createGateSessions(env, ctx, repository).prompt("session-1", reviewer, "attempt-1")
+      createGateSessions(env, ctx, repository).prompt("session-1", reviewer, "n0nce-7f3a")
     ).rejects.toThrow("Reviewer prompt was refused: 409");
   });
 });

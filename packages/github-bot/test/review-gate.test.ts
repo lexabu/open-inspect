@@ -26,6 +26,7 @@ import { checkSenderPermission, getPullRequest } from "../src/github-auth";
 import { findSuiteReviewRun } from "../src/github-checks";
 import {
   alice,
+  BASE,
   BOT,
   createEnv,
   createLogger,
@@ -68,19 +69,21 @@ describe("starting a gated review", () => {
       repository: { owner: "acme", name: "widgets" },
       pullNumber: 42,
       headSha: HEAD,
+      // The base the prompt below names, for the control plane to record as reviewed.
+      base: { ref: "main", sha: BASE },
       reviewers: [
         {
           model: HAIKU,
           harness: "opencode",
           reasoningEffort: null,
           title: "GitHub: Review PR #42",
-          prompt: expect.stringContaining(VERDICT_SECTION),
+          prompt: expect.stringContaining(`compare/${BASE}...${HEAD}`),
         },
       ],
     });
-    // The verdict is asked for last, after the repository's own instructions.
-    expect(request.reviewers[0].prompt.trimEnd().endsWith("review you submitted.")).toBe(true);
     expect(request.reviewers[0].prompt).toContain(`"commit_id": "${HEAD}"`);
+    // The verdict instructions, with the session's nonce, are added by the control plane.
+    expect(request.reviewers[0].prompt).not.toContain(VERDICT_SECTION);
   });
 
   it("sends one reviewer per configured model, each told it reviews alone", async () => {
@@ -97,7 +100,6 @@ describe("starting a gated review", () => {
     ]);
     for (const reviewer of reviewers) {
       expect(reviewer.prompt).toContain("## Independent Reviewer");
-      expect(reviewer.prompt).toContain(VERDICT_SECTION);
     }
   });
 
@@ -148,7 +150,7 @@ describe("starting a gated review", () => {
     });
   });
 
-  it.each(["review_in_progress", "stale_head", "draft_pr"] as const)(
+  it.each(["review_in_progress", "stale_head", "stale_base", "draft_pr"] as const)(
     "passes on the control plane's %s",
     async (reason) => {
       const { env, gateCalls } = createEnv({ reviews: { outcome: "skipped", reason } });
@@ -234,7 +236,12 @@ describe("check re-run", () => {
 
     expect(result).toMatchObject({ outcome: "processed", handler_action: "review" });
     const [request] = gateCalls("reviews");
-    expect(request).toMatchObject({ pullNumber: 42, headSha: HEAD });
+    // Head and base are the live pull request's, read just before.
+    expect(request).toMatchObject({
+      pullNumber: 42,
+      headSha: HEAD,
+      base: { ref: "main", sha: BASE },
+    });
     expect(request.reviewers[0].prompt).toContain("## Pre-merge Review");
     expect(checkSenderPermission).toHaveBeenCalledWith(
       "installation-token",

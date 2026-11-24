@@ -1,176 +1,19 @@
-import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { GitHubMergeGate } from "@open-inspect/shared/types/integrations";
-import type { StartGateReviewRequest } from "@open-inspect/shared/types/github-review-gate";
-import {
-  REVIEW_ATTEMPT_TIMEOUT_MS,
-  ReviewGate,
-  type GateSessions,
-} from "../../src/github-review/gate";
-import type { CheckRunState, GateGitHub, LivePull } from "../../src/github-review/github";
-import { ReviewGateStore } from "../../src/github-review/store";
-import type { Logger } from "../../src/logger";
+import { beforeEach, describe, expect, it } from "vitest";
+import { REVIEW_ATTEMPT_TIMEOUT_MS } from "../../src/github-review/gate";
 import { cleanD1Tables } from "./cleanup";
-
-const HEAD = "a".repeat(40);
-const BASE = "b".repeat(40);
-const NEW_HEAD = "c".repeat(40);
-const NEW_BASE = "d".repeat(40);
-const HAIKU = "anthropic/claude-haiku-4-5";
-const SOL = "openai/gpt-5.6-sol";
-const repository = { owner: "acme", name: "widgets", id: 99 };
-const pullKey = { repoId: 99, prNumber: 42 };
-const verdictBlock = (verdict: string, summary = "Reads well.") =>
-  "Review submitted.\n\n```json\n" + JSON.stringify({ verdict, summary }) + "\n```";
-
-function createLogger(): Logger {
-  const log: Logger = {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: vi.fn(() => log),
-  };
-  return log;
-}
-
-/** GitHub as the gate sees it: one pull request, its diffs, and the check runs written. */
-function fakeGitHub() {
-  const world = {
-    pull: {
-      number: 42,
-      open: true,
-      draft: false,
-      author: "alice",
-      headSha: HEAD,
-      headLabel: "acme:feature/cache",
-      baseRef: "main",
-      baseSha: BASE,
-    } as LivePull | null,
-    /** Hash of `base...head`; a pair not listed has the pull request's usual diff. */
-    diffs: new Map<string, string | null>(),
-    shared: null as string | null,
-    createFails: false,
-    updateFails: false,
-    /** Every check run, with the states written to it, newest state last. */
-    checks: [] as { id: number; headSha: string; externalId: string; states: CheckRunState[] }[],
-  };
-  const github: GateGitHub = {
-    getPull: async () => world.pull,
-    hashPullDiff: async (baseSha, headSha) => {
-      const key = `${baseSha}...${headSha}`;
-      return world.diffs.has(key) ? (world.diffs.get(key) ?? null) : "hash-of-the-usual-diff";
-    },
-    sharedHeadReason: async () => world.shared,
-    createCheck: async (run, state) => {
-      if (world.createFails) return null;
-      const id = world.checks.length + 1;
-      world.checks.push({ id, headSha: run.headSha, externalId: run.externalId, states: [state] });
-      return id;
-    },
-    updateCheck: async (id, state) => {
-      if (world.updateFails) return false;
-      world.checks.find((check) => check.id === id)?.states.push(state);
-      return true;
-    },
-  };
-  const latest = (id: number) => world.checks.find((check) => check.id === id)?.states.at(-1);
-  return { world, github, latest };
-}
-
-function harness(mode: GitHubMergeGate = "required") {
-  const { world, github, latest } = fakeGitHub();
-  const settings = { mode };
-  const clock = { now: Date.parse("2026-11-23T10:00:00.000Z") };
-  const store = new ReviewGateStore(env.DB);
-  const log = createLogger();
-  const gate = new ReviewGate({
-    store,
-    github: () => github,
-    mode: async () => settings.mode,
-    botUsername: "test-bot[bot]",
-    now: () => (clock.now += 1),
-    log,
-  });
-  let created = 0;
-  const sessions: GateSessions & { prompted: string[]; failOn: number | null } = {
-    prompted: [],
-    failOn: null,
-    create: async () => {
-      created += 1;
-      if (sessions.failOn === created) throw new Error("sandbox quota exceeded");
-      return `session-${created}`;
-    },
-    prompt: async (sessionId) => {
-      sessions.prompted.push(sessionId);
-      return `message-for-${sessionId}`;
-    },
-  };
-  const request = (
-    models = [HAIKU],
-    headSha = world.pull?.headSha ?? HEAD
-  ): StartGateReviewRequest => ({
-    repository: { owner: "acme", name: "widgets" },
-    pullNumber: 42,
-    headSha,
-    reviewers: models.map((model) => ({
-      model,
-      harness: "opencode",
-      reasoningEffort: null,
-      title: "Review",
-      prompt: "Review this pull request.",
-    })),
-  });
-  const start = (models?: string[]) => gate.start(request(models), repository, sessions);
-  const complete = (sessionId: string, finalMessage: string, success = true) =>
-    gate.sessionCompleted({ sessionId, success, finalMessage });
-  const change = (kind: "head" | "base" | "reopened" | "review_not_started", detail?: string) =>
-    gate.pullChanged(
-      {
-        repository: { owner: "acme", name: "widgets" },
-        pullNumber: 42,
-        change: kind,
-        headSha: world.pull?.headSha ?? HEAD,
-        ...(detail ? { detail } : {}),
-      },
-      repository
-    );
-  const override = (commit = "aaaaaaa", overriddenBy = "bob") =>
-    gate.override(
-      {
-        repository: { owner: "acme", name: "widgets" },
-        pullNumber: 42,
-        commit,
-        reason: "verified by hand",
-        overriddenBy,
-      },
-      repository
-    );
-  const attemptStatus = async (id: string) => (await store.getAttempt(id))?.status;
-  return {
-    gate,
-    store,
-    world,
-    latest,
-    settings,
-    clock,
-    sessions,
-    log,
-    request,
-    start,
-    complete,
-    change,
-    override,
-    attemptStatus,
-  };
-}
-
-/** Starts a single-reviewer review and returns the attempt id; its check run is id 1. */
-async function started(h: ReturnType<typeof harness>, models?: string[]): Promise<string> {
-  const response = await h.start(models);
-  if (response.outcome !== "started") throw new Error(`not started: ${response.reason}`);
-  return response.attemptId;
-}
+import {
+  BASE,
+  HAIKU,
+  harness,
+  HEAD,
+  NEW_BASE,
+  NEW_HEAD,
+  pullKey,
+  repository,
+  SOL,
+  started,
+  verdictBlock,
+} from "./github-review-gate-harness";
 
 beforeEach(cleanD1Tables);
 
@@ -274,7 +117,7 @@ describe("starting a review", () => {
 
     await expect(h.start([HAIKU, SOL])).rejects.toThrow("sandbox quota exceeded");
 
-    expect(await h.store.getRunningAttempt(pullKey)).toBeNull();
+    expect(await h.store.getActiveAttempt(pullKey)).toBeNull();
     expect(h.sessions.prompted).toEqual([]);
     h.sessions.failOn = null;
     expect(await h.start()).toMatchObject({ outcome: "started" });
@@ -362,8 +205,8 @@ describe("concluding from the sessions' own verdicts", () => {
     ["fails", "", false, "The session did not complete."],
     ["ends without a verdict", "I reviewed it and it looks fine.", true, "ended without a verdict"],
     [
-      "ends with a malformed verdict",
-      '```json\n{"verdict": "approve"}\n```',
+      "ends with a verdict block that lacks its nonce",
+      '```json\n{"verdict": "approve", "summary": "No nonce."}\n```',
       true,
       "ended without a verdict",
     ],
@@ -803,13 +646,14 @@ describe("override", () => {
     expect(h.latest(1)).toMatchObject({ output: { title: "Superseded" } });
   });
 
-  it("carries an override forward like a verdict", async () => {
+  it("applies to the commit it names only: a later head asks for a review", async () => {
     const h = harness();
     await h.override();
+    // The same diff on a new head, as after "Update branch": a review would carry forward.
     h.world.pull!.headSha = NEW_HEAD;
 
-    expect(await h.change("head")).toEqual({ outcome: "carried_forward" });
-    expect(h.world.checks.at(-1)?.states[0].output.summary).toContain("@bob overrode");
+    expect(await h.change("head")).toEqual({ outcome: "needs_review" });
+    expect(h.world.checks.at(-1)?.states[0]).toMatchObject({ conclusion: "action_required" });
   });
 
   it.each([

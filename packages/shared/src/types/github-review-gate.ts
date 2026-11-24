@@ -35,6 +35,11 @@ export const startGateReviewRequestSchema = z.object({
   pullNumber: pullNumberSchema,
   /** The head the prompts were written for; refused when it is no longer the live head. */
   headSha: commitShaSchema,
+  /**
+   * The base the prompts tell the reviewers to diff against. It is recorded as the base that
+   * was reviewed; a start whose base branch is no longer the live one is refused.
+   */
+  base: z.object({ ref: z.string().min(1), sha: commitShaSchema }),
   reviewers: z
     .array(
       z.object({
@@ -66,6 +71,7 @@ export const startGateReviewResponseSchema = z.discriminatedUnion("outcome", [
       "pr_not_open",
       "draft_pr",
       "stale_head",
+      "stale_base",
     ]),
   }),
 ]);

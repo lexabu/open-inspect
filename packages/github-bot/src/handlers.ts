@@ -66,8 +66,6 @@ function reviewPromptFor(
       reviewer,
       commentOnlyReviews: config.commentOnlyReviews,
       preMerge,
-      // Every review feeds the AI Review check where the merge gate is on.
-      reportVerdict: config.mergeGate !== "off",
     });
 }
 
@@ -94,7 +92,7 @@ export async function handleReviewRequested(
     title: `GitHub: Review PR #${pr.number}`,
     action: "review",
     reactionPath: `issues/${pr.number}`,
-    gatedHeadSha: pr.head.sha,
+    gated: { headSha: pr.head.sha, base: pr.base },
     buildPrompt: reviewPromptFor(env, repo, pr, false),
   });
 }
@@ -193,7 +191,7 @@ async function rerunReview(
     title: `GitHub: Review PR #${pullNumber}`,
     action: "review",
     reactionPath: `issues/${pullNumber}`,
-    gatedHeadSha: headSha,
+    gated: { headSha, base: pr.base },
     buildPrompt: reviewPromptFor(env, repo, pr, true),
   });
 }
@@ -229,7 +227,7 @@ export async function handlePullRequestOpened(
         title: `GitHub: Review PR #${pr.number}`,
         action: "auto_review",
         reactionPath: `issues/${pr.number}`,
-        gatedHeadSha: pr.head.sha,
+        gated: { headSha: pr.head.sha, base: pr.base },
         buildPrompt: reviewPromptFor(env, repo, pr, false),
       })
   );

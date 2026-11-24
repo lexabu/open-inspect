@@ -1,3 +1,4 @@
+import { reviewVerdictInstructions } from "@open-inspect/shared/github-review-verdict";
 import { checkHarnessCompatibility } from "@open-inspect/shared/harnesses";
 import { sendPromptResponseSchema } from "@open-inspect/shared/types/session-api";
 import { generateId } from "../auth/crypto";
@@ -99,14 +100,16 @@ export function createGateSessions(
       return sessionId;
     },
 
-    async prompt(sessionId, reviewer, attemptId) {
+    async prompt(sessionId, reviewer, nonce) {
       const body: EnqueuePromptRequest = {
-        content: reviewer.prompt,
+        // The verdict instructions come last and from here, not from the bot: only this
+        // session's prompt, which nobody can read, carries its nonce.
+        content: `${reviewer.prompt}\n## Verdict for the AI Review check\n${reviewVerdictInstructions(nonce)}\n`,
         authorId: REVIEWER_PARTICIPANT,
         canonicalUserId: null,
         source: "github",
-        callbackContext: { source: GITHUB_REVIEW_CALLBACK_SOURCE, attemptId },
-        clientRequestId: `github-review:${attemptId}:${sessionId}`,
+        callbackContext: { source: GITHUB_REVIEW_CALLBACK_SOURCE },
+        clientRequestId: `github-review:${sessionId}`,
       };
       const response = await createSessionRuntimeClient(env, ctx).fetch(
         sessionId,

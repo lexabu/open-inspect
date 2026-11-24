@@ -320,9 +320,13 @@ function artifactCreatedDuringMessage(artifact: ArtifactRow, message: MessageRow
   return artifact.created_at >= start && artifact.created_at <= end;
 }
 
+const TOOL_ACTIVITY = new Set(["tool_call", "tool_result"]);
+
 /**
- * The text of the agent's final response to a message, or null when the message has more
- * events than are read: its last words may then lie beyond them.
+ * The text a turn ended with: the agent's last text, provided no tool activity followed
+ * it. Null when the turn produced no text, ended on tool activity (text from the middle
+ * of a turn is not its final word), or has more events than are read, so its last words
+ * may lie beyond them.
  */
 export function finalResponseText(
   source: FinalResponseEventPageSource,
@@ -330,6 +334,14 @@ export function finalResponseText(
 ): string | null {
   const { eventRows, eventLimitReached } = collectFinalResponseEventRows(source, messageId);
   if (eventLimitReached) return null;
+  const lastTextAt = Math.max(
+    ...eventRows.filter((row) => row.type === "token").map((row) => row.created_at)
+  );
+  // No text at all gives -Infinity. A tie in time cannot be ordered, so it counts as after.
+  const toolActivityFollowed = eventRows.some(
+    (row) => TOOL_ACTIVITY.has(row.type) && row.created_at >= lastTextAt
+  );
+  if (!Number.isFinite(lastTextAt) || toolActivityFollowed) return null;
   return buildAgentResponseFromEvents(eventRows.map(toEventResponse)).textContent;
 }
 

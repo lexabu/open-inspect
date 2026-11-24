@@ -163,11 +163,11 @@ export async function startSession(
     /** `!model` / `!reasoning` flags parsed from the triggering comment, if any. */
     inlineFlags?: ParseInlinePromptFlagsResult;
     /**
-     * The head commit of a review that feeds the AI Review check. Where the merge gate
+     * The head and base of a review that feeds the AI Review check. Where the merge gate
      * is on, its sessions are started by the control plane and held by the platform, so
      * nobody, the sender included, can read their prompt or send them a message.
      */
-    gatedHeadSha?: string;
+    gated?: { headSha: string; base: { ref: string; sha: string } };
     buildPrompt: (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string;
   }
 ): Promise<HandlerResult> {
@@ -230,13 +230,15 @@ export async function startSession(
   const reviewerCount = selections.length;
 
   const reaction = `https://api.github.com/repos/${repositoryPath}/${params.reactionPath}/reactions`;
-  const { gatedHeadSha } = params;
-  if (gatedHeadSha !== undefined && config.mergeGate !== "off") {
+  const { gated } = params;
+  if (gated !== undefined && config.mergeGate !== "off") {
     return withReaction(log, ghToken, reaction, userAgent, meta, async () => {
       const response = await startGateReview(env, traceId, {
         repository: { owner, name: repoName },
         pullNumber,
-        headSha: gatedHeadSha,
+        headSha: gated.headSha,
+        // The base the prompts below name; the control plane records it as the base reviewed.
+        base: gated.base,
         reviewers: selections.map((selection) => {
           const modelName = getModelDisplayName(selection.model);
           const reviewer = reviewerCount > 1 ? { modelName, reviewerCount } : null;

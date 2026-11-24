@@ -16,8 +16,14 @@ CREATE TABLE github_review_attempts (
   diff_hash TEXT,
   -- The attempt's own check run; NULL until GitHub has created it.
   check_run_id INTEGER,
-  status TEXT NOT NULL CHECK (status IN ('running', 'concluded', 'superseded')),
+  -- running: its sessions are working. concluding: one worker owns the conclusion and is
+  -- writing the check. concluded, superseded: done. abandoned: its check could not be
+  -- written for too long, and it was given up so it stops holding the pull request.
+  status TEXT NOT NULL
+    CHECK (status IN ('running', 'concluding', 'concluded', 'superseded', 'abandoned')),
   created_at INTEGER NOT NULL,
+  -- When the conclusion was claimed; a claim left by a worker that died is released.
+  concluding_at INTEGER,
   finished_at INTEGER
 );
 
@@ -25,11 +31,11 @@ CREATE TABLE github_review_attempts (
 -- change who can read it, so nobody can steer the verdict it reports.
 ALTER TABLE sessions ADD COLUMN platform_held INTEGER NOT NULL DEFAULT 0;
 
--- At most one attempt runs per pull request: starting one is an insert that this
--- index refuses while another is running.
-CREATE UNIQUE INDEX idx_github_review_attempts_running
+-- At most one attempt is active per pull request: starting one is an insert that this
+-- index refuses while another is running or concluding.
+CREATE UNIQUE INDEX idx_github_review_attempts_active
   ON github_review_attempts (repo_id, pr_number)
-  WHERE status = 'running';
+  WHERE status IN ('running', 'concluding');
 
 CREATE INDEX idx_github_review_attempts_status ON github_review_attempts (status, created_at);
 
@@ -39,6 +45,9 @@ CREATE TABLE github_review_attempt_sessions (
   position INTEGER NOT NULL,
   session_id TEXT NOT NULL UNIQUE,
   model TEXT NOT NULL,
+  -- Given to the session in its prompt and required in its verdict, so text the session
+  -- merely quotes, from the pull request for example, is never read as its verdict.
+  nonce TEXT NOT NULL,
   -- NULL while the session runs. 'failed' covers a session that failed, timed out or
   -- ended without a well-formed verdict.
   verdict TEXT CHECK (verdict IN ('approve', 'request_changes', 'failed')),

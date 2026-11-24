@@ -115,13 +115,18 @@ The GitHub bot decides who may ask for a review. Everything after that happens i
   A workspace Owner can read it, and that read is audited.
 - **The verdict comes from the session, not from GitHub.** A reviewer still submits its GitHub
   review for people to read, and ends its last message with a small JSON verdict (`approve` or
-  `request_changes`, with a one-line summary). When the session finishes, the control plane reads
-  that verdict from the session's own events. Review bodies on GitHub are never parsed: editing,
-  dismissing or copying a review changes nothing about the check.
+  `request_changes`, with a one-line summary). The verdict must carry a value the control plane put
+  in that session's prompt and nowhere else, so a verdict block the session merely quotes, from the
+  pull request for example, is not its verdict. When the session finishes, the control plane reads
+  the text the turn ended with from the session's own events; a turn that ended on tool activity has
+  no verdict. Review bodies on GitHub are never parsed: editing, dismissing or copying a review
+  changes nothing about the check.
 - **All reviewers must approve.** The check concludes when every session of the attempt has
   finished. A session that fails, runs past 90 minutes, or ends without a well-formed verdict makes
   the attempt unfinished: `failure` when required, `neutral` in shadow, with **Re-run** to try
-  again.
+  again. One worker at a time owns an attempt's conclusion, and an attempt that was replaced while
+  its check was being written is closed as "Superseded" instead. If the check cannot be written for
+  three hours, the attempt is given up so that a new review of the head can start.
 - **An approval passes only the pull request that was reviewed.** At the moment of concluding, the
   pull request must still have the reviewed head and base branch. If the base branch moved on, the
   diff must hash the same as the one reviewed. And the pull request must be the only open one on
@@ -130,11 +135,16 @@ The GitHub bot decides who may ask for a review. Everything after that happens i
 
 ### Carry-forward
 
-A new head keeps the last verdict when the pull request's diff against the same base branch is the
-one that was reviewed: same files, same hunks and context, same binary files and file modes. Only
-the positions of hunks and the blob ids of text files are ignored, since a base-branch update moves
-them. A diff in which one file has two hunks that read the same is never carried forward, because
-without positions they cannot be told apart.
+A new head keeps the last review verdict when the pull request's diff against the same base branch
+is the one that was reviewed: same files, same hunks and context, same binary files and file modes.
+Only the positions of hunks and the blob ids of text files are ignored, since a base-branch update
+moves them. A diff in which one file has two hunks that read the same is never carried forward,
+because without positions they cannot be told apart.
+
+This is deliberate: "Update branch", or any push that leaves the pull request's own changes as they
+were reviewed, reuses the approval instead of costing a new review. The reviewers approved those
+changes; they did not review what arrived from the base branch, which was reviewed in its own pull
+requests.
 
 ### Override
 
@@ -148,7 +158,8 @@ reason. Both are recorded on the check:
 
 The override applies only if the commit it names is still the head; otherwise the bot replies with
 the current head. A comment that mentions the bot and "override" in any other form is an ordinary
-request to the bot. A new review of the same commit replaces the override.
+request to the bot. An override covers that one commit: it is never carried forward, so the next
+push asks for a review again. A new review of the same commit replaces the override.
 
 ### Permissions
 
@@ -170,6 +181,11 @@ is one signal next to the required human approval, not a replacement for it.
 
 ### Rollout
 
+- **Required mode needs "Require branches to be up to date before merging" on the target branch.**
+  The check is tied to the head commit. When the target branch advances and the head does not,
+  GitHub sends no event for the pull request and the check on its head stays as it was; it is the
+  up-to-date rule that forces the head to be updated, which the gate then sees as a new head.
+  Without that rule, a pull request could merge on a pass reached against an older target.
 - Before switching a repository from `shadow` to `required`, re-run the check on its open pull
   requests. A check concluded in shadow mode is `neutral`, which GitHub accepts for a required
   check; it only becomes `failure` or `action_required` when it is concluded again.

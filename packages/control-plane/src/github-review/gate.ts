@@ -36,6 +36,12 @@ import type {
 /** An attempt whose sessions have not all reported after this long is concluded as unfinished. */
 export const REVIEW_ATTEMPT_TIMEOUT_MS = 90 * 60 * 1000;
 
+/** An attempt whose check still cannot be written this long after it started is given up. */
+const REVIEW_ATTEMPT_GIVE_UP_MS = 2 * REVIEW_ATTEMPT_TIMEOUT_MS;
+
+/** A conclusion claimed this long ago without finishing was left by a worker that died. */
+const STALE_CONCLUSION_MS = 5 * 60 * 1000;
+
 export interface GateRepository {
   owner: string;
   name: string;
@@ -47,8 +53,11 @@ type Reviewer = StartGateReviewRequest["reviewers"][number];
 /** Creates and prompts the platform-held sessions of an attempt. */
 export interface GateSessions {
   create(reviewer: Reviewer): Promise<string>;
-  /** Queues the reviewer's prompt; the session reports to `attemptId` when it completes. */
-  prompt(sessionId: string, reviewer: Reviewer, attemptId: string): Promise<string>;
+  /**
+   * Queues the reviewer's prompt, with the verdict it must end on bound to `nonce`. The
+   * session reports to the gate when it completes.
+   */
+  prompt(sessionId: string, reviewer: Reviewer, nonce: string): Promise<string>;
 }
 
 export interface ReviewGateDeps {
@@ -116,6 +125,9 @@ export class ReviewGate {
     if (!pull.open) return { outcome: "skipped", reason: "pr_not_open" };
     if (pull.draft) return { outcome: "skipped", reason: "draft_pr" };
     if (pull.headSha !== request.headSha) return { outcome: "skipped", reason: "stale_head" };
+    // The prompts name a base; a pull request retargeted since they were written would
+    // be reviewed against one branch and recorded against another.
+    if (pull.baseRef !== request.base.ref) return { outcome: "skipped", reason: "stale_base" };
 
     const attempt = {
       id: generateId(),
@@ -124,9 +136,11 @@ export class ReviewGate {
       repoId: repository.id,
       prNumber: pull.number,
       headSha: pull.headSha,
-      baseRef: pull.baseRef,
-      baseSha: pull.baseSha,
-      diffHash: await github.hashPullDiff(pull.baseSha, pull.headSha),
+      // The base the reviewers are given, not the live one: the branch may have moved on
+      // since the prompts were written, and the conclusion compares against this.
+      baseRef: request.base.ref,
+      baseSha: request.base.sha,
+      diffHash: await github.hashPullDiff(request.base.sha, pull.headSha),
     };
     const startedAt = this.deps.now();
     // The claim is the serialization point: of two starts, the database admits one.
@@ -140,23 +154,28 @@ export class ReviewGate {
       // Sessions are on record before any is prompted, so none can report unseen.
       const created = [];
       for (const reviewer of request.reviewers) {
-        created.push({ reviewer, sessionId: await sessions.create(reviewer) });
+        const sessionId = await sessions.create(reviewer);
+        created.push({ reviewer, sessionId, nonce: generateId() });
       }
       await store.addSessions(
         attempt.id,
-        created.map(({ reviewer, sessionId }) => ({ sessionId, model: reviewer.model }))
+        created.map(({ reviewer, sessionId, nonce }) => ({
+          sessionId,
+          model: reviewer.model,
+          nonce,
+        }))
       );
       started = await Promise.all(
-        created.map(async ({ reviewer, sessionId }) => ({
+        created.map(async ({ reviewer, sessionId, nonce }) => ({
           sessionId,
-          messageId: await sessions.prompt(sessionId, reviewer, attempt.id),
+          messageId: await sessions.prompt(sessionId, reviewer, nonce),
           model: reviewer.model,
         }))
       );
     } catch (error) {
       // A review that did not fully start decides nothing; a session that did start
       // reports into a superseded attempt.
-      await store.supersedeRunning(pullKey, this.deps.now());
+      await store.supersedeActive(pullKey, this.deps.now());
       throw error;
     }
 
@@ -174,10 +193,17 @@ export class ReviewGate {
         },
       }
     );
-    // Without it the conclusion creates the check run instead of updating one.
-    if (checkRunId === null)
+    if (checkRunId === null) {
+      // Without it the conclusion creates the check run instead of updating one.
       log.error("github_review.check_create_failed", { attempt: attempt.id });
-    else await store.setCheckRun(attempt.id, checkRunId);
+    } else {
+      await store.setCheckRun(attempt.id, checkRunId);
+      // An override or a base change may have replaced the attempt while it started;
+      // its check run was not on record then, so it is closed here.
+      if ((await store.getActiveAttempt(pullKey))?.id !== attempt.id) {
+        await this.closeSuperseded(github, [{ ...attempt, checkRunId }]);
+      }
+    }
     log.info("github_review.started", {
       attempt: attempt.id,
       repo: `${repository.owner}/${repository.name}`,
@@ -210,8 +236,7 @@ export class ReviewGate {
     switch (request.change) {
       case "review_not_started": {
         if (pull.headSha !== request.headSha) return { outcome: "skipped", reason: "stale_head" };
-        const running = await store.getRunningAttempt(pullKey);
-        if (running?.headSha === pull.headSha) {
+        if (await this.reviewing(pullKey, pull)) {
           return { outcome: "skipped", reason: "review_in_progress" };
         }
         return ask(`The AI review did not start (${request.detail ?? "unknown reason"}).`);
@@ -228,6 +253,11 @@ export class ReviewGate {
         );
       case "head": {
         if (pull.headSha !== request.headSha) return { outcome: "skipped", reason: "stale_head" };
+        // A review of this very head is under way (a late delivery, or a review asked
+        // for before the push event arrived). A newer check run would shadow its result.
+        if (await this.reviewing(pullKey, pull)) {
+          return { outcome: "skipped", reason: "review_in_progress" };
+        }
         const verdict = await store.getVerdict(pullKey);
         const carried = verdict && (await this.carryForward(github, pullKey, pull, verdict, mode));
         if (!carried) return ask("No AI review covers this diff.");
@@ -235,6 +265,11 @@ export class ReviewGate {
         return { outcome: "carried_forward" };
       }
     }
+  }
+
+  /** Whether an attempt on the pull request's live head is running or concluding. */
+  private async reviewing(pullKey: PullKey, pull: LivePull): Promise<boolean> {
+    return (await this.deps.store.getActiveAttempt(pullKey))?.headSha === pull.headSha;
   }
 
   /**
@@ -249,6 +284,8 @@ export class ReviewGate {
     verdict: PullVerdict,
     mode: ActiveMode
   ): Promise<boolean | string> {
+    // An override is a person's decision about one commit; it is never extended to another.
+    if (verdict.attemptId === null) return false;
     if (verdict.diffHash === null || verdict.baseRef !== pull.baseRef) return false;
     if ((await github.hashPullDiff(pull.baseSha, pull.headSha)) !== verdict.diffHash) return false;
     if (verdict.approved) {
@@ -346,9 +383,14 @@ export class ReviewGate {
     success: boolean;
     finalMessage: string;
   }): Promise<void> {
-    const verdict = completion.success ? parseReviewVerdict(completion.finalMessage) : null;
-    const attemptId = await this.deps.store.recordSessionVerdict(
-      completion.sessionId,
+    const { store } = this.deps;
+    const session = await store.getSession(completion.sessionId);
+    if (session === null) return;
+    const verdict = completion.success
+      ? parseReviewVerdict(completion.finalMessage, session.nonce)
+      : null;
+    await store.recordSessionVerdict(
+      session.sessionId,
       verdict?.verdict ?? "failed",
       verdict?.summary ??
         (completion.success
@@ -356,17 +398,21 @@ export class ReviewGate {
           : "The session did not complete."),
       this.deps.now()
     );
-    if (attemptId !== null) await this.concludeIfComplete(attemptId);
+    await this.concludeIfComplete(session.attemptId);
   }
 
   /**
    * The backstop for what completion alone cannot guarantee: an attempt whose sessions
-   * all reported but whose check write failed is concluded again, and one that has run
-   * past its time limit is concluded as unfinished.
+   * all reported but whose check write failed is concluded again, one that has run past
+   * its time limit is concluded as unfinished, and one whose check still cannot be
+   * written long after that is given up, so it stops holding its pull request.
    */
   async recover(): Promise<void> {
     const { store, log } = this.deps;
-    const cutoff = this.deps.now() - REVIEW_ATTEMPT_TIMEOUT_MS;
+    const now = this.deps.now();
+    const cutoff = now - REVIEW_ATTEMPT_TIMEOUT_MS;
+    // A conclusion claimed by a worker that died is anyone's again.
+    await store.releaseStaleConclusions(now - STALE_CONCLUSION_MS);
     for (const attempt of await store.listOverdueAttempts(cutoff)) {
       try {
         if (attempt.createdAt < cutoff) {
@@ -386,16 +432,25 @@ export class ReviewGate {
           };
           await this.closeSuperseded(
             this.deps.github(repository),
-            await store.supersedeRunning(pullKey, this.deps.now())
+            await store.supersedeActive(pullKey, this.deps.now())
           );
           continue;
         }
         await this.concludeIfComplete(attempt.id);
       } catch (error) {
-        log.error("github_review.recovery_failed", {
+        const fields = {
           attempt: attempt.id,
+          pull_number: attempt.prNumber,
+          head_sha: attempt.headSha,
           error: error instanceof Error ? error : new Error(String(error)),
-        });
+        };
+        if (attempt.createdAt < now - REVIEW_ATTEMPT_GIVE_UP_MS) {
+          // Its check run stays as it is on GitHub; a new review of the head replaces it.
+          await store.abandon(attempt.id, this.deps.now());
+          log.error("github_review.abandoned", fields);
+        } else {
+          log.error("github_review.recovery_failed", fields);
+        }
       }
     }
   }
@@ -409,7 +464,63 @@ export class ReviewGate {
     await this.conclude(attempt, sessions);
   }
 
+  /**
+   * Concludes an attempt whose sessions have all reported. Ownership comes first: only
+   * the caller that claims the conclusion writes the check, and an attempt that was
+   * superseded can no longer claim it.
+   */
   private async conclude(attempt: ReviewAttempt, sessions: ReviewAttemptSession[]): Promise<void> {
+    const { store } = this.deps;
+    if (!(await store.beginConclusion(attempt.id, this.deps.now()))) return;
+    let written: {
+      state: CheckRunState;
+      checkRunId: number;
+      finished: boolean;
+      approved: boolean;
+      summary: string;
+    };
+    try {
+      written = await this.writeConclusion(attempt, sessions);
+    } catch (error) {
+      // Nothing was decided; the recovery pass claims the conclusion again.
+      await store.releaseConclusion(attempt.id);
+      throw error;
+    }
+    const { state, checkRunId, finished, approved, summary } = written;
+
+    // The verdict is evidence about the diff that was reviewed, whatever the check says
+    // about passing here and now. An unfinished review is evidence of nothing.
+    const concluded = await store.concludeAttempt(
+      attempt,
+      finished ? { approved, summary } : null,
+      this.deps.now()
+    );
+    if (!concluded) {
+      // Superseded while the check was being written: what replaced it decides, and
+      // this run must not be left saying otherwise.
+      const repository = { owner: attempt.repoOwner, name: attempt.repoName, id: attempt.repoId };
+      await this.closeSuperseded(this.deps.github(repository), [{ ...attempt, checkRunId }]);
+    }
+    this.deps.log.info("github_review.concluded", {
+      attempt: attempt.id,
+      pull_number: attempt.prNumber,
+      head_sha: attempt.headSha,
+      conclusion: state.status === "completed" ? state.conclusion : state.status,
+      superseded: !concluded,
+    });
+  }
+
+  /** Decides an attempt's check state and writes it to the attempt's own check run. */
+  private async writeConclusion(
+    attempt: ReviewAttempt,
+    sessions: ReviewAttemptSession[]
+  ): Promise<{
+    state: CheckRunState;
+    checkRunId: number;
+    finished: boolean;
+    approved: boolean;
+    summary: string;
+  }> {
     const repository = { owner: attempt.repoOwner, name: attempt.repoName, id: attempt.repoId };
     const setting = await this.deps.mode(repository);
     // A gate turned off mid-review still closes its check, without blocking anything.
@@ -464,34 +575,23 @@ export class ReviewGate {
           : needsReview(mode, attempt.headSha, `${summary}\n\n${blocked}`);
     }
 
-    const written =
-      attempt.checkRunId === null
-        ? (await github.createCheck(
-            {
-              headSha: attempt.headSha,
-              externalId: reviewCheckExternalId(attempt.prNumber, attempt.id),
-              startedAt: new Date(attempt.createdAt).toISOString(),
-            },
-            state
-          )) !== null
-        : await github.updateCheck(attempt.checkRunId, state);
-    // The attempt stays running, so the recovery pass writes the check again.
-    if (!written) throw new Error(`AI Review check could not be written for ${attempt.headSha}`);
-
-    // The verdict is evidence about the diff that was reviewed, whatever the check says
-    // about passing here and now. An unfinished review is evidence of nothing.
-    const concluded = await this.deps.store.concludeAttempt(
-      attempt,
-      finished ? { approved, summary } : null,
-      this.deps.now()
-    );
-    this.deps.log.info("github_review.concluded", {
-      attempt: attempt.id,
-      pull_number: attempt.prNumber,
-      head_sha: attempt.headSha,
-      conclusion: state.status === "completed" ? state.conclusion : state.status,
-      superseded: !concluded,
-    });
+    let checkRunId = attempt.checkRunId;
+    if (checkRunId === null) {
+      checkRunId = await github.createCheck(
+        {
+          headSha: attempt.headSha,
+          externalId: reviewCheckExternalId(attempt.prNumber, attempt.id),
+          startedAt: new Date(attempt.createdAt).toISOString(),
+        },
+        state
+      );
+    } else if (!(await github.updateCheck(checkRunId, state))) {
+      checkRunId = null;
+    }
+    if (checkRunId === null) {
+      throw new Error(`AI Review check could not be written for ${attempt.headSha}`);
+    }
+    return { state, checkRunId, finished, approved, summary };
   }
 
   /**
@@ -542,7 +642,10 @@ export class ReviewGate {
    * Closes the check runs of attempts that were replaced, so none stays in progress
    * forever. Best effort: the replacing check is what decides, whatever this does.
    */
-  private async closeSuperseded(github: GateGitHub, attempts: ReviewAttempt[]): Promise<void> {
+  private async closeSuperseded(
+    github: GateGitHub,
+    attempts: readonly Pick<ReviewAttempt, "id" | "checkRunId">[]
+  ): Promise<void> {
     for (const attempt of attempts) {
       if (attempt.checkRunId === null) continue;
       if (!(await github.updateCheck(attempt.checkRunId, SUPERSEDED))) {
