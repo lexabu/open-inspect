@@ -78,7 +78,7 @@ function buildPreMergeSection(
   const earlier = reviewer ? "your own earlier review (same reviewer line)" : "your earlier review";
   return `
 ## Pre-merge Review
-A maintainer approved commit \`${headSha}\`. This is the last review before merge. If ${earlier}
+This review was asked for again on commit \`${headSha}\`, the code about to merge. If ${earlier}
 is on this PR, say which of its findings are now resolved, and repeat only what is still open or new.
 `;
 }

@@ -522,17 +522,17 @@ describe("IntegrationSettingsStore", () => {
       ).toBe(false);
     });
 
-    it("stores reviewOnApproval and rejects a non-boolean value", async () => {
-      await store.setRepoSettings("github", "acme/widgets", { reviewOnApproval: true });
-      expect(
-        (await store.getResolvedConfig("github", "acme/widgets")).settings.reviewOnApproval
-      ).toBe(true);
+    it("stores mergeGate and rejects an unknown mode", async () => {
+      await store.setRepoSettings("github", "acme/widgets", { mergeGate: "shadow" });
+      expect((await store.getResolvedConfig("github", "acme/widgets")).settings.mergeGate).toBe(
+        "shadow"
+      );
 
       await expect(
         store.setRepoSettings("github", "acme/widgets", {
-          reviewOnApproval: "yes" as unknown as boolean,
+          mergeGate: "blocking" as unknown as "required",
         })
-      ).rejects.toThrow(IntegrationSettingsValidationError);
+      ).rejects.toThrow("mergeGate must be off, shadow or required");
     });
 
     it("stores commentOnlyReviews and rejects a non-boolean value", async () => {

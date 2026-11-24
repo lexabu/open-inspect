@@ -16,7 +16,7 @@ import { escapeRegExp } from "./regex";
  */
 
 /** The App's handle (`my-app`) from a configured login, with or without `[bot]`. */
-function botHandle(botUsername: string): string {
+export function botHandle(botUsername: string): string {
   return botUsername.trim().replace(/\[bot\]$/i, "");
 }
 

@@ -36,17 +36,19 @@ describe("GitHub integration settings harness", () => {
     expect(await resolvedCommentOnly()).toBe(false);
   });
 
-  it("resolves reviewOnApproval: off by default, inherited, and overridable per repository", async () => {
+  it("resolves mergeGate: off by default, inherited, and overridable per repository", async () => {
     const resolved = async () => {
       const res = await serviceFetch(resolvedEndpoint, { service: "github-bot" });
       expect(res.status).toBe(200);
-      return (await res.json<{ config: { reviewOnApproval: boolean } }>()).config.reviewOnApproval;
+      return (await res.json<{ config: { mergeGate: string } }>()).config.mergeGate;
     };
-    expect(await resolved()).toBe(false);
-    expect((await put(globalEndpoint, { defaults: { reviewOnApproval: true } })).status).toBe(200);
-    expect(await resolved()).toBe(true);
-    expect((await put(repoEndpoint, { reviewOnApproval: false })).status).toBe(200);
-    expect(await resolved()).toBe(false);
+    expect(await resolved()).toBe("off");
+    expect((await put(globalEndpoint, { defaults: { mergeGate: "shadow" } })).status).toBe(200);
+    expect(await resolved()).toBe("shadow");
+    expect((await put(repoEndpoint, { mergeGate: "required" })).status).toBe(200);
+    expect(await resolved()).toBe("required");
+    expect((await put(repoEndpoint, { mergeGate: "blocking" })).status).toBe(400);
+    expect((await put(repoEndpoint, { reviewOnApproval: true })).status).toBe(400);
   });
 
   it("resolves to the built-in harness when unconfigured", async () => {

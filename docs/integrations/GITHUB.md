@@ -61,8 +61,9 @@ Auto-review is skipped when:
 - The PR opener is not allowed to trigger the bot
 - Auto-review is disabled globally or for that repository
 
-Converting a draft PR to ready for review does not start the same auto-review path. If you need a
-follow-up after a draft becomes ready, mention the bot in a PR comment.
+Converting a draft PR to ready for review does not start the same auto-review path, unless the
+[AI Review check](#ai-review-check) is on. Otherwise, if you need a follow-up after a draft becomes
+ready, mention the bot in a PR comment.
 
 ### What It Posts
 
@@ -76,6 +77,45 @@ it only if that account is already known to the workspace or unsafe allow-all is
 [Bot enrollment](../AUTH.md#bot-enrollment)). Pull requests that an automation run's own prompt
 opens are authored by the App (see [Commit Signing](#commit-signing)), so auto-review skips them by
 default, and any review the bot submits on them can only comment.
+
+---
+
+## AI Review Check
+
+With the `mergeGate` setting on, the App posts a check run named `AI Review` on each pull request's
+head commit. It passes when the bot's review of that exact commit approves. The setting is `"off"`
+(the default), `"shadow"` or `"required"`, set through the integration settings API, globally or per
+repository.
+
+| Event                                       | What the check does                                                                                          |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| PR opened, or marked ready for review       | The opening review runs and the check is in progress.                                                        |
+| The bot's review lands                      | Once every configured reviewer has posted on the commit: success if all approve, otherwise not approved.     |
+| New commits                                 | No review runs. The check asks for one: "Re-run the AI review before merging", with a **Review now** button. |
+| Base-branch update, PR's own diff unchanged | The last verdict carries forward to the new head.                                                            |
+| **Re-run** or **Review now**                | Reviews the head commit for whoever clicked, if they may trigger the bot.                                    |
+
+In `shadow` mode a missing or unfavourable verdict concludes `neutral`, which never blocks a merge.
+In `required` mode it concludes `failure`, or `action_required` when no review covers the head, so
+the check can be made a required status check. An approve verdict is an `APPROVED` review, or a
+comment-only review that states approve.
+
+**Override.** Someone with write access who is not the pull request's author can pass the head's
+check with a PR comment, and the reason and their name are recorded on the check:
+
+```text
+@my-app override reviewer misread the migration; verified by hand
+```
+
+A new review of the same commit replaces the override.
+
+**If a review never posts.** A review session that ends without posting sends nothing to GitHub. The
+next webhook for that pull request (a comment, a push, a review) concludes a check that has been in
+progress for more than 30 minutes as unfinished, and it can then be re-run.
+
+The check needs the App permission **Checks: Read and write**. GitHub sends an App with that
+permission the **Check run** events for its own checks, including **Re-run** and **Review now**,
+without a separate event subscription.
 
 ---
 

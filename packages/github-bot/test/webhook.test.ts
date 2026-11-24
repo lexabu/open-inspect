@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import type { ExecutionContext as HonoExecutionContext } from "hono";
 import type { Env } from "../src/types";
+import type * as GitHubChecks from "../src/github-checks";
 
 vi.mock("../src/github-auth", () => ({
   generateInstallationToken: vi.fn().mockResolvedValue("installation-token"),
@@ -8,15 +9,26 @@ vi.mock("../src/github-auth", () => ({
   postIssueComment: vi.fn().mockResolvedValue(true),
   checkSenderPermission: vi.fn().mockResolvedValue({ hasPermission: true }),
   listPullRequestReviews: vi.fn().mockResolvedValue([]),
-  getPullRequestState: vi.fn().mockResolvedValue({
-    state: "open",
-    draft: false,
-    headSha: "a".repeat(40),
-  }),
+  getPullRequest: vi.fn(),
+}));
+
+vi.mock("../src/github-checks", async (importOriginal) => ({
+  ...(await importOriginal<typeof GitHubChecks>()),
+  createCheckRun: vi.fn().mockResolvedValue(7),
+  updateCheckRun: vi.fn().mockResolvedValue(true),
+  findCheckRun: vi.fn().mockResolvedValue({ run: null }),
+  getCompareDiff: vi.fn().mockResolvedValue("diff --git a/x b/x\n+one\n"),
 }));
 
 import app from "../src/index";
-import { postReaction, postIssueComment, checkSenderPermission } from "../src/github-auth";
+import {
+  postReaction,
+  postIssueComment,
+  checkSenderPermission,
+  getPullRequest,
+  listPullRequestReviews,
+} from "../src/github-auth";
+import { createCheckRun, findCheckRun, updateCheckRun } from "../src/github-checks";
 
 /** Generate a valid GitHub webhook signature for a given secret and body. */
 async function sign(secret: string, body: string): Promise<string> {
@@ -40,7 +52,10 @@ const SECRET = "test-webhook-secret";
 function createMockKV() {
   const store = new Map<string, string>();
   return {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
+    get: vi.fn(async (key: string, type?: "json") => {
+      const value = store.get(key) ?? null;
+      return type === "json" && value !== null ? JSON.parse(value) : value;
+    }),
     put: vi.fn(async (key: string, value: string) => {
       store.set(key, value);
     }),
@@ -281,101 +296,6 @@ describe("POST /webhooks/github", () => {
         .mocked(env.CONTROL_PLANE.fetch)
         .mock.calls.some(([url]) => String(url) === "https://internal/sessions")
     ).toBe(false);
-  });
-
-  it("queues Autofix and starts one pre-merge review for a signed approval, once per delivery", async () => {
-    const head = "a".repeat(40);
-    const body = JSON.stringify({
-      action: "submitted",
-      review: {
-        id: 5681,
-        state: "approved",
-        commit_id: head,
-        user: { login: "bob", type: "User" },
-      },
-      pull_request: {
-        number: 42,
-        title: "Add caching",
-        body: null,
-        user: { login: "alice" },
-        head: { ref: "feature/cache", sha: head },
-        base: { ref: "main", sha: "b".repeat(40) },
-        draft: false,
-        state: "open",
-      },
-      repository: { id: 99, owner: { login: "test" }, name: "repo", private: false },
-      sender: {
-        login: "bob",
-        id: 1002,
-        avatar_url: "https://avatars.githubusercontent.com/u/1002",
-      },
-    });
-    const signature = await sign(SECRET, body);
-    const env = makeEnv();
-    const cpFetch = vi.mocked(env.CONTROL_PLANE.fetch);
-    cpFetch.mockImplementation(async (url) => {
-      const requestUrl = String(url);
-      if (requestUrl.includes("/integration-settings/github/resolved/")) {
-        return Response.json({
-          config: {
-            model: null,
-            reasoningEffort: null,
-            reviewOnApproval: true,
-            autoReviewOnOpen: true,
-            enabledRepos: null,
-            allowedTriggerUsers: null,
-            codeReviewInstructions: null,
-            commentActionInstructions: null,
-          },
-        });
-      }
-      if (requestUrl.startsWith("https://internal/github/route?")) {
-        return Response.json({ teamId: null, via: "workspace" });
-      }
-      if (requestUrl.endsWith("/metadata")) {
-        return Response.json({ repo: "test/repo", metadata: null });
-      }
-      if (requestUrl === "https://internal/sessions") {
-        return Response.json({ sessionId: "session-approve", status: "created" });
-      }
-      if (requestUrl.endsWith("/prompt")) {
-        return Response.json({ messageId: "message-approve" });
-      }
-      return new Response(null, { status: 204 });
-    });
-    const deliver = async () => {
-      const ctx = makeCtx();
-      await app.fetch(
-        new Request("http://localhost/webhooks/github", {
-          method: "POST",
-          body,
-          headers: {
-            "X-Hub-Signature-256": signature,
-            "X-GitHub-Event": "pull_request_review",
-            "X-GitHub-Delivery": "delivery-approval-5681",
-          },
-        }),
-        env,
-        ctx
-      );
-      await flushWaitUntil(ctx);
-    };
-    const sessionsCreated = () =>
-      cpFetch.mock.calls.filter(([url]) => String(url) === "https://internal/sessions").length;
-
-    await deliver();
-    expect(env.AUTOFIX_QUEUE.send).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: "pull_request_review",
-        deliveryId: "delivery-approval-5681",
-      })
-    );
-    expect(sessionsCreated()).toBe(1);
-    const prompt = cpFetch.mock.calls.find(([url]) => String(url).endsWith("/prompt"));
-    expect(JSON.parse(String(prompt?.[1]?.body)).content).toContain("## Pre-merge Review");
-
-    await deliver();
-    expect(sessionsCreated()).toBe(1);
   });
 
   it("does not queue individual review comment webhooks", async () => {
@@ -1526,6 +1446,308 @@ describe("POST /webhooks/github", () => {
       conclusion: "failure",
       triggerKey: "workflow_run:123456789:1",
     });
+  });
+});
+
+describe("AI Review merge gate routing", () => {
+  const HEAD = "a".repeat(40);
+  const BASE = "b".repeat(40);
+  const repository = { id: 99, owner: { login: "test" }, name: "repo", private: false };
+  const bob = { login: "bob", id: 1002, avatar_url: "https://avatars.test/1002", type: "User" };
+  const pullRequest = {
+    number: 42,
+    title: "Add caching",
+    body: null,
+    user: { login: "alice" },
+    head: { ref: "feature/cache", sha: HEAD },
+    base: { ref: "main", sha: BASE },
+    draft: false,
+    state: "open",
+  };
+
+  function gatedEnv(mergeGate: "off" | "shadow" | "required" = "required") {
+    vi.clearAllMocks();
+    vi.mocked(checkSenderPermission).mockResolvedValue({ hasPermission: true });
+    vi.mocked(listPullRequestReviews).mockResolvedValue([]);
+    vi.mocked(getPullRequest).mockResolvedValue(pullRequest);
+    vi.mocked(findCheckRun).mockResolvedValue({ run: null });
+    const env = makeEnv();
+    const cpFetch = vi.mocked(env.CONTROL_PLANE.fetch);
+    cpFetch.mockImplementation(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes("/integration-settings/github/resolved/")) {
+        return Response.json({
+          config: {
+            model: null,
+            reasoningEffort: null,
+            mergeGate,
+            autoReviewOnOpen: true,
+            enabledRepos: null,
+            allowedTriggerUsers: null,
+            codeReviewInstructions: null,
+            commentActionInstructions: null,
+          },
+        });
+      }
+      if (requestUrl.startsWith("https://internal/github/route?")) {
+        return Response.json({ teamId: null, via: "workspace" });
+      }
+      if (requestUrl.endsWith("/metadata")) {
+        return Response.json({ repo: "test/repo", metadata: null });
+      }
+      if (requestUrl === "https://internal/sessions") {
+        return Response.json({ sessionId: "session-gate", status: "created" });
+      }
+      if (requestUrl.endsWith("/prompt")) return Response.json({ messageId: "message-gate" });
+      return new Response(null, { status: 204 });
+    });
+    const sessionsCreated = () =>
+      cpFetch.mock.calls.filter(([url]) => String(url) === "https://internal/sessions").length;
+    const deliver = async (event: string, deliveryId: string, payload: object) => {
+      const body = JSON.stringify(payload);
+      const ctx = makeCtx();
+      const res = await app.fetch(
+        new Request("http://localhost/webhooks/github", {
+          method: "POST",
+          body,
+          headers: {
+            "X-Hub-Signature-256": await sign(SECRET, body),
+            "X-GitHub-Event": event,
+            "X-GitHub-Delivery": deliveryId,
+          },
+        }),
+        env,
+        ctx
+      );
+      await flushWaitUntil(ctx);
+      return res;
+    };
+    return { env, deliver, sessionsCreated };
+  }
+
+  const review = (login: string, state: string) => ({
+    action: "submitted",
+    review: { id: 5681, state, commit_id: HEAD, user: { login, type: "Bot" } },
+    pull_request: pullRequest,
+    repository,
+    sender: bob,
+  });
+
+  it("starts no review and touches no check when a human approves", async () => {
+    const { env, deliver, sessionsCreated } = gatedEnv();
+
+    await deliver("pull_request_review", "delivery-human-approval", review("bob", "approved"));
+
+    expect(env.AUTOFIX_QUEUE.send).toHaveBeenCalledOnce();
+    expect(sessionsCreated()).toBe(0);
+    expect(findCheckRun).not.toHaveBeenCalled();
+    expect(createCheckRun).not.toHaveBeenCalled();
+  });
+
+  it("concludes the check from the bot's own review", async () => {
+    const { deliver, sessionsCreated } = gatedEnv();
+    vi.mocked(findCheckRun).mockResolvedValue({
+      run: { id: 7, status: "in_progress", startedAt: "2026-11-23T10:00:00Z" },
+    });
+    vi.mocked(listPullRequestReviews).mockResolvedValue([
+      {
+        login: "test-bot[bot]",
+        commitId: HEAD,
+        state: "APPROVED",
+        body: "",
+        url: "https://github.test/review/1",
+        submittedAt: "2026-11-23T10:05:00Z",
+      },
+    ]);
+
+    await deliver(
+      "pull_request_review",
+      "delivery-bot-review",
+      review("test-bot[bot]", "approved")
+    );
+
+    expect(sessionsCreated()).toBe(0);
+    expect(updateCheckRun).toHaveBeenCalledWith(
+      expect.anything(),
+      7,
+      expect.objectContaining({ status: "completed", conclusion: "success" })
+    );
+  });
+
+  it("asks for a review on synchronize without starting one, once per delivery", async () => {
+    const { deliver, sessionsCreated } = gatedEnv();
+    const payload = { action: "synchronize", pull_request: pullRequest, repository, sender: bob };
+
+    await deliver("pull_request", "delivery-sync", payload);
+    await deliver("pull_request", "delivery-sync", payload);
+
+    expect(sessionsCreated()).toBe(0);
+    expect(createCheckRun).toHaveBeenCalledOnce();
+    expect(createCheckRun).toHaveBeenCalledWith(
+      expect.anything(),
+      HEAD,
+      expect.any(String),
+      expect.objectContaining({ conclusion: "action_required", reviewAction: true })
+    );
+  });
+
+  it("leaves synchronize alone while the gate is off", async () => {
+    const { deliver } = gatedEnv("off");
+
+    await deliver("pull_request", "delivery-sync-off", {
+      action: "synchronize",
+      pull_request: pullRequest,
+      repository,
+      sender: bob,
+    });
+
+    expect(createCheckRun).not.toHaveBeenCalled();
+  });
+
+  it("reviews a pull request that leaves draft and shows the check in progress", async () => {
+    const { deliver, sessionsCreated } = gatedEnv("shadow");
+
+    await deliver("pull_request", "delivery-ready", {
+      action: "ready_for_review",
+      pull_request: pullRequest,
+      repository,
+      sender: bob,
+    });
+
+    expect(sessionsCreated()).toBe(1);
+    expect(createCheckRun).toHaveBeenCalledWith(
+      expect.anything(),
+      HEAD,
+      expect.any(String),
+      expect.objectContaining({ status: "in_progress" })
+    );
+  });
+
+  it.each([
+    ["rerequested", {}],
+    ["requested_action", { requested_action: { identifier: "review" } }],
+  ])("starts a review for check_run %s on our check, once per delivery", async (action, extra) => {
+    const { env, deliver, sessionsCreated } = gatedEnv();
+    const payload = {
+      action,
+      ...extra,
+      check_run: {
+        id: 7,
+        name: "AI Review",
+        head_sha: HEAD,
+        app: { id: 12345 },
+        pull_requests: [{ number: 42 }],
+      },
+      repository,
+      sender: bob,
+    };
+    Object.assign(env, { GITHUB_APP_ID: "12345" });
+
+    await deliver("check_run", `delivery-check-${action}`, payload);
+    await deliver("check_run", `delivery-check-${action}`, payload);
+
+    expect(sessionsCreated()).toBe(1);
+    expect(createCheckRun).toHaveBeenCalledOnce();
+    expect(createCheckRun).toHaveBeenCalledWith(
+      expect.anything(),
+      HEAD,
+      expect.any(String),
+      expect.objectContaining({ status: "in_progress" })
+    );
+  });
+
+  it.each([
+    ["another check", "rerequested", { name: "e2e", app: { id: 12345 } }],
+    ["another App's check", "rerequested", { name: "AI Review", app: { id: 999 } }],
+    ["a created check", "created", { name: "AI Review", app: { id: 12345 } }],
+  ])("ignores %s", async (_name, action, check) => {
+    const { env, deliver, sessionsCreated } = gatedEnv();
+    Object.assign(env, { GITHUB_APP_ID: "12345" });
+
+    await deliver("check_run", "delivery-check-other", {
+      action,
+      check_run: { id: 7, head_sha: HEAD, pull_requests: [{ number: 42 }], ...check },
+      repository,
+      sender: bob,
+    });
+
+    expect(sessionsCreated()).toBe(0);
+    expect(createCheckRun).not.toHaveBeenCalled();
+  });
+
+  const comment = (body: string) => ({
+    action: "created",
+    issue: { number: 42, title: "Add caching", pull_request: { url: "https://api.test/pulls/42" } },
+    comment: { id: 100, body, user: { login: "bob", type: "User" } },
+    repository,
+    sender: bob,
+  });
+
+  it("passes the check on an override comment without starting a session", async () => {
+    const { deliver, sessionsCreated } = gatedEnv();
+
+    await deliver("issue_comment", "delivery-override", comment("@test-bot override hotfix"));
+
+    expect(sessionsCreated()).toBe(0);
+    expect(createCheckRun).toHaveBeenCalledWith(
+      expect.anything(),
+      HEAD,
+      expect.any(String),
+      expect.objectContaining({
+        conclusion: "success",
+        output: expect.objectContaining({ title: "Overridden by @bob" }),
+      })
+    );
+  });
+
+  it("replies once to an override without a reason, even when redelivered", async () => {
+    const { env, deliver, sessionsCreated } = gatedEnv();
+
+    await deliver("issue_comment", "delivery-override-empty", comment("@test-bot override"));
+    await deliver("issue_comment", "delivery-override-empty", comment("@test-bot override"));
+
+    expect(sessionsCreated()).toBe(0);
+    expect(createCheckRun).not.toHaveBeenCalled();
+    expect(postIssueComment).toHaveBeenCalledOnce();
+    expect(await env.GITHUB_KV.get("delivery-dispatch:delivery-override-empty")).toBe("processed");
+  });
+
+  it("concludes a check left in progress on the next webhook for its pull request", async () => {
+    const { env, deliver, sessionsCreated } = gatedEnv();
+    await env.GITHUB_KV.put(
+      "ai-review:pending:test/repo#42",
+      JSON.stringify({ sha: HEAD, startedAt: "2020-01-01T00:00:00.000Z" })
+    );
+    vi.mocked(findCheckRun).mockResolvedValue({
+      run: { id: 7, status: "in_progress", startedAt: "2020-01-01T00:00:00.000Z" },
+    });
+
+    await deliver("issue_comment", "delivery-plain-comment", comment("Looks fine to me."));
+
+    expect(sessionsCreated()).toBe(0);
+    expect(updateCheckRun).toHaveBeenCalledWith(
+      expect.anything(),
+      7,
+      expect.objectContaining({
+        conclusion: "failure",
+        output: expect.objectContaining({ title: "The AI review did not finish" }),
+      })
+    );
+    expect(await env.GITHUB_KV.get("ai-review:pending:test/repo#42")).toBeNull();
+  });
+
+  it("does not fail a delivery when the stuck-check pass cannot read GitHub", async () => {
+    const { env, deliver } = gatedEnv();
+    await env.GITHUB_KV.put(
+      "ai-review:pending:test/repo#42",
+      JSON.stringify({ sha: HEAD, startedAt: "2020-01-01T00:00:00.000Z" })
+    );
+    vi.mocked(findCheckRun).mockResolvedValue(null);
+
+    await deliver("issue_comment", "delivery-stuck-unreadable", comment("Looks fine to me."));
+
+    expect(await env.GITHUB_KV.get("delivery:delivery-stuck-unreadable")).toBe("processed");
+    expect(await env.GITHUB_KV.get("ai-review:pending:test/repo#42")).not.toBeNull();
   });
 });
 

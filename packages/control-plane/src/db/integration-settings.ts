@@ -512,10 +512,6 @@ export class IntegrationSettingsStore {
       throw new IntegrationSettingsValidationError("commentOnlyReviews must be a boolean");
     }
 
-    if (settings.reviewOnApproval !== undefined && typeof settings.reviewOnApproval !== "boolean") {
-      throw new IntegrationSettingsValidationError("reviewOnApproval must be a boolean");
-    }
-
     if (
       settings.codeReviewInstructions !== undefined &&
       typeof settings.codeReviewInstructions !== "string"

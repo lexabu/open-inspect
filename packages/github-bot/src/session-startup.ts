@@ -10,7 +10,6 @@ import {
   postIssueComment,
   checkSenderPermission,
 } from "./github-auth";
-import { commitReviewClaim } from "./commit-review-gate";
 import { resolveSessionTarget } from "./session-target";
 import { createSession, sendPrompt } from "./session-client";
 import { getGitHubConfig, type ResolvedGitHubConfig } from "./utils/integration-config";
@@ -30,7 +29,7 @@ export type HandlerResult =
   | { outcome: "processed"; sessions: LaunchedSession[]; handler_action: string }
   | { outcome: "skipped"; skip_reason: string };
 
-type SessionAction = "review" | "auto_review" | "approval_review" | "comment" | "review_comment";
+type SessionAction = "review" | "auto_review" | "comment" | "review_comment";
 
 const githubRouteResponseSchema = z.discriminatedUnion("via", [
   z.object({ via: z.literal("workspace"), teamId: z.null() }),
@@ -162,12 +161,6 @@ export async function startSession(
     reactionPath: string;
     /** `!model` / `!reasoning` flags parsed from the triggering comment, if any. */
     inlineFlags?: ParseInlinePromptFlagsResult;
-    /**
-     * The approved commit of a pre-merge review, claimed while it runs. The review is
-     * skipped when that commit is claimed, already reviewed by the bot, or no longer the
-     * live head.
-     */
-    preMergeCommit?: string;
     buildPrompt: (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string;
   }
 ): Promise<HandlerResult> {
@@ -185,10 +178,6 @@ export async function startSession(
     log.debug("handler.auto_review_disabled", { trace_id: traceId, repo: repoFullName });
     return { outcome: "skipped", skip_reason: "auto_review_disabled" };
   }
-  if (action === "approval_review" && !config.reviewOnApproval) {
-    log.debug("handler.review_on_approval_disabled", { trace_id: traceId, repo: repoFullName });
-    return { outcome: "skipped", skip_reason: "review_on_approval_disabled" };
-  }
 
   const gating = await resolveCallerGating(
     env,
@@ -205,27 +194,6 @@ export async function startSession(
   const repositoryPath = encodeRepositoryPathSegments({ repoOwner: owner, repoName });
   const userAgent = resolveAppName(env);
   const meta = { trace_id: traceId, repo: repoFullName, pull_number: pullNumber };
-
-  const claim = params.preMergeCommit
-    ? commitReviewClaim(
-        env,
-        log,
-        {
-          token: ghToken,
-          userAgent,
-          pullUrl: `https://api.github.com/repos/${repositoryPath}/pulls/${pullNumber}`,
-        },
-        meta,
-        params.preMergeCommit
-      )
-    : null;
-  if (claim) {
-    const skipReason = await claim.checkPreMerge();
-    if (skipReason !== null) {
-      log.info("handler.pre_merge_review_skipped", { ...meta, skip_reason: skipReason });
-      return { outcome: "skipped", skip_reason: skipReason };
-    }
-  }
 
   const commentsUrl = `https://api.github.com/repos/${repositoryPath}/issues/${pullNumber}/comments`;
   const postRequiredComment = async (body: string, code: string): Promise<void> => {
@@ -254,16 +222,7 @@ export async function startSession(
   }
   const reviewerCount = selections.length;
 
-  await claim?.claim();
-  let result: HandlerResult;
-  try {
-    result = await launchSessions();
-  } catch (error) {
-    await claim?.release();
-    throw error;
-  }
-  if (result.outcome === "skipped") await claim?.release();
-  return result;
+  return launchSessions();
 
   function launchSessions(): Promise<HandlerResult> {
     return withReaction(
@@ -274,7 +233,6 @@ export async function startSession(
       meta,
       async () => {
         // Deprecated auto-review is always workspace-level and never needs a route lookup.
-        // The pre-merge review routes like a review request, so it follows the PR's session.
         const teamId =
           action === "auto_review"
             ? null
@@ -436,17 +394,13 @@ function refusalComment(code: RefusalCode, triggerRepo: string): string {
 
 /**
  * The model selections a trigger starts sessions for: every configured reviewer
- * for a review request, auto-review or pre-merge review, otherwise the single
- * configured selection.
+ * for a review request or auto-review, otherwise the single configured selection.
  */
 function requestedSelections(
   action: SessionAction,
   config: ResolvedGitHubConfig
 ): ModelSelection[] {
-  if (
-    (action === "review" || action === "auto_review" || action === "approval_review") &&
-    config.reviewers
-  ) {
+  if ((action === "review" || action === "auto_review") && config.reviewers) {
     return config.reviewers.map((reviewer) => ({
       model: reviewer.model,
       harness: reviewer.harness,

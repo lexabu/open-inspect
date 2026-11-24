@@ -46,8 +46,10 @@ export interface Env {
 }
 
 export type {
+  CheckRunPayload,
   IssueCommentPayload,
   PullRequestOpenedPayload,
+  PullRequestSynchronizePayload,
   ReviewCommentPayload,
   ReviewRequestedPayload,
   ReviewSubmittedPayload,

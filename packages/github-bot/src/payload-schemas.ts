@@ -7,6 +7,8 @@ const githubUserSchema = z.object({
 const githubSenderSchema = githubUserSchema.extend({
   id: z.number(),
   avatar_url: z.string(),
+  // "User", "Bot" or "Organization".
+  type: z.string().optional(),
 });
 
 const repositorySchema = z.object({
@@ -43,8 +45,9 @@ const reviewedPullRequestSchema = pullRequestSchema.extend({
   base: z.object({ ref: z.string(), sha: commitShaSchema }),
 });
 
+/** A PR that became reviewable: opened, or moved out of draft. */
 export const pullRequestOpenedPayloadSchema = z.object({
-  action: z.literal("opened"),
+  action: z.enum(["opened", "ready_for_review"]),
   pull_request: reviewedPullRequestSchema.extend({ draft: z.boolean() }),
   repository: repositorySchema,
   sender: githubSenderSchema,
@@ -58,15 +61,35 @@ export const reviewRequestedPayloadSchema = z.object({
   sender: githubSenderSchema,
 });
 
+export const pullRequestSynchronizePayloadSchema = z.object({
+  action: z.literal("synchronize"),
+  pull_request: reviewedPullRequestSchema.extend({ draft: z.boolean(), state: z.string() }),
+  repository: repositorySchema,
+  sender: githubSenderSchema,
+});
+
 export const reviewSubmittedPayloadSchema = z.object({
   action: z.literal("submitted"),
   review: z.object({
-    // Webhook review states are lowercase: approved, changes_requested, commented.
-    state: z.string(),
     commit_id: commitShaSchema,
-    user: githubUserSchema.extend({ type: z.string().optional() }),
+    user: githubUserSchema,
   }),
-  pull_request: reviewedPullRequestSchema.extend({ draft: z.boolean(), state: z.string() }),
+  pull_request: reviewedPullRequestSchema,
+  repository: repositorySchema,
+  sender: githubSenderSchema,
+});
+
+/** The Re-run button (`rerequested`) or a check's own button (`requested_action`). */
+export const checkRunPayloadSchema = z.object({
+  action: z.enum(["rerequested", "requested_action"]),
+  check_run: z.object({
+    name: z.string(),
+    head_sha: commitShaSchema,
+    app: z.object({ id: z.number() }),
+    // Empty for a commit that is on no open pull request of this repository.
+    pull_requests: z.array(z.object({ number: z.number() })),
+  }),
+  requested_action: z.object({ identifier: z.string() }).optional(),
   repository: repositorySchema,
   sender: githubSenderSchema,
 });
@@ -119,9 +142,9 @@ export const requestedReviewerPayloadSchema = z
   })
   .passthrough();
 
-export const reviewStatePayloadSchema = z
+export const reviewAuthorPayloadSchema = z
   .object({
-    review: z.object({ state: z.string() }).nullable().optional(),
+    review: z.object({ user: githubUserSchema.nullable().optional() }).nullable().optional(),
   })
   .passthrough();
 
@@ -133,7 +156,9 @@ export const webhookActionPayloadSchema = z
 
 export type PullRequestOpenedPayload = z.infer<typeof pullRequestOpenedPayloadSchema>;
 export type ReviewRequestedPayload = z.infer<typeof reviewRequestedPayloadSchema>;
+export type PullRequestSynchronizePayload = z.infer<typeof pullRequestSynchronizePayloadSchema>;
 export type ReviewSubmittedPayload = z.infer<typeof reviewSubmittedPayloadSchema>;
+export type CheckRunPayload = z.infer<typeof checkRunPayloadSchema>;
 export type IssueCommentPayload = z.infer<typeof issueCommentPayloadSchema>;
 export type ReviewCommentPayload = z.infer<typeof reviewCommentPayloadSchema>;
 export type WebhookSummaryPayload = z.infer<typeof webhookSummaryPayloadSchema>;
