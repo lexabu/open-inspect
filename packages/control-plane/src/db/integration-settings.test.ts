@@ -514,6 +514,18 @@ describe("IntegrationSettingsStore", () => {
       expect(result?.codeReviewInstructions).toBe("Focus on security.");
     });
 
+    it("stores commentOnlyReviews and rejects a non-boolean value", async () => {
+      await store.setRepoSettings("github", "acme/widgets", { commentOnlyReviews: true });
+      const config = await store.getResolvedConfig("github", "acme/widgets");
+      expect(config.settings.commentOnlyReviews).toBe(true);
+
+      await expect(
+        store.setRepoSettings("github", "acme/widgets", {
+          commentOnlyReviews: "yes" as unknown as boolean,
+        })
+      ).rejects.toThrow(IntegrationSettingsValidationError);
+    });
+
     it("stores reviewer models under their canonical IDs", async () => {
       await store.setRepoSettings("github", "acme/widgets", {
         reviewers: [{ model: "claude-opus-4-5", harness: "claude" }],

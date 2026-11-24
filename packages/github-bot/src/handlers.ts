@@ -66,6 +66,7 @@ export async function handleReviewRequested(
         codeReviewInstructions: config.codeReviewInstructions,
         isSelfReview: isAuthoredByBot(pr, env),
         reviewer,
+        commentOnlyReviews: config.commentOnlyReviews,
       }),
   });
 }
@@ -104,6 +105,7 @@ export async function handlePullRequestOpened(
         codeReviewInstructions: config.codeReviewInstructions,
         isSelfReview: isAuthoredByBot(pr, env),
         reviewer,
+        commentOnlyReviews: config.commentOnlyReviews,
       }),
   });
 }
@@ -156,6 +158,7 @@ export async function handleIssueComment(
         commenter: sender.login,
         isPublic: !repo.private,
         commentActionInstructions: config.commentActionInstructions,
+        commentOnlyReviews: config.commentOnlyReviews,
       }),
   });
 }
@@ -208,6 +211,7 @@ export async function handleReviewComment(
         diffHunk: comment.diff_hunk,
         commentId: comment.in_reply_to_id ?? comment.id,
         commentActionInstructions: config.commentActionInstructions,
+        commentOnlyReviews: config.commentOnlyReviews,
       }),
   });
 }

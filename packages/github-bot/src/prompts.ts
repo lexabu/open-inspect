@@ -66,6 +66,7 @@ export function buildCodeReviewPrompt(params: {
   codeReviewInstructions?: string | null;
   isSelfReview?: boolean;
   reviewer?: ReviewerContext | null;
+  commentOnlyReviews?: boolean;
 }): string {
   const {
     owner,
@@ -80,16 +81,19 @@ export function buildCodeReviewPrompt(params: {
     codeReviewInstructions,
     isSelfReview = false,
     reviewer = null,
+    commentOnlyReviews = false,
   } = params;
   // Reviewers share one GitHub App identity, so a later APPROVE would clear an
   // earlier REQUEST_CHANGES; with several reviewers each one only comments.
-  const commentOnly = isSelfReview || reviewer !== null;
+  const commentOnly = isSelfReview || reviewer !== null || commentOnlyReviews;
   const reviewEvent = commentOnly ? "COMMENT" : "<APPROVE, REQUEST_CHANGES, or COMMENT>";
   const reviewEventGuidance = isSelfReview
     ? "Use COMMENT because GitHub does not allow pull request authors to approve their own PRs."
     : reviewer
       ? "Use COMMENT: you are one of several reviewers sharing one GitHub identity, so state your\n   verdict (approve or request changes) in the first lines of the review body instead."
-      : "Use APPROVE if the code looks good, REQUEST_CHANGES if changes are needed,\n   or COMMENT for general feedback.";
+      : commentOnlyReviews
+        ? "Use COMMENT: this repository takes the bot's verdict as advice only, so state it\n   (approve or request changes) in the first lines of the review body instead."
+        : "Use APPROVE if the code looks good, REQUEST_CHANGES if changes are needed,\n   or COMMENT for general feedback.";
   const repositoryPath = encodeRepositoryPathSegments({ repoOwner: owner, repoName: repo });
 
   const prTitleBlock = buildUntrustedUserContentBlock({
@@ -175,6 +179,7 @@ export function buildCommentActionPrompt(params: {
   diffHunk?: string;
   commentId?: number;
   commentActionInstructions?: string | null;
+  commentOnlyReviews?: boolean;
 }): string {
   const {
     owner,
@@ -190,6 +195,7 @@ export function buildCommentActionPrompt(params: {
     diffHunk,
     commentId,
     commentActionInstructions,
+    commentOnlyReviews = false,
   } = params;
 
   const intro = head
@@ -233,6 +239,6 @@ ${buildUntrustedUserContentBlock({
    gh api repos/${owner}/${repo}/issues/${number}/comments \\
      --method POST \\
      -f body="<summary of what you did or your response>"${replyInstruction}
-${buildCustomInstructionsSection(commentActionInstructions)}
+${commentOnlyReviews ? "\nNever submit an APPROVE or REQUEST_CHANGES pull request review in this repository; if a review\nis needed, submit it as COMMENT and state the verdict in its text.\n" : ""}${buildCustomInstructionsSection(commentActionInstructions)}
 ${buildCommentGuidelines(isPublic)}`;
 }

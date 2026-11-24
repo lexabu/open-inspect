@@ -24,6 +24,13 @@ describe("buildCodeReviewPrompt", () => {
     expect(prompt).not.toContain("<APPROVE, REQUEST_CHANGES, or COMMENT>");
   });
 
+  it("only comments when the repository takes reviews as advice", () => {
+    const prompt = buildCodeReviewPrompt({ ...baseParams, commentOnlyReviews: true });
+    expect(prompt).toContain('"event": "COMMENT"');
+    expect(prompt).not.toContain("<APPROVE, REQUEST_CHANGES, or COMMENT>");
+    expect(prompt).toContain("advice only");
+  });
+
   it("lets a single reviewer approve or request changes", () => {
     const prompt = buildCodeReviewPrompt(baseParams);
     expect(prompt).toContain("<APPROVE, REQUEST_CHANGES, or COMMENT>");
@@ -151,6 +158,13 @@ describe("buildCommentActionPrompt", () => {
     head: "feature/cache",
     isPublic: true,
   };
+
+  it("forbids approving or requesting changes when the repository is comment-only", () => {
+    expect(buildCommentActionPrompt({ ...baseParams, commentOnlyReviews: true })).toContain(
+      "Never submit an APPROVE or REQUEST_CHANGES"
+    );
+    expect(buildCommentActionPrompt(baseParams)).not.toContain("Never submit an APPROVE");
+  });
 
   it("includes all fields in the prompt", () => {
     const prompt = buildCommentActionPrompt(baseParams);

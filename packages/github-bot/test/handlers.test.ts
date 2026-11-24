@@ -23,6 +23,7 @@ vi.mock("../src/utils/integration-config", () => ({
     harness: "opencode",
     reasoningEffort: null,
     reviewers: null,
+    commentOnlyReviews: false,
     autoReviewOnOpen: true,
     enabledRepos: null,
     allowedTriggerUsers: null,
@@ -36,6 +37,7 @@ const defaultConfig: ResolvedGitHubConfig = {
   harness: "opencode",
   reasoningEffort: null,
   reviewers: null,
+  commentOnlyReviews: false,
   autoReviewOnOpen: true,
   enabledRepos: null,
   allowedTriggerUsers: null,
@@ -1022,6 +1024,17 @@ describe("multi-model reviews", () => {
       true
     );
     expect(postReaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells a comment-only repository's reviewer to post COMMENT", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({ ...defaultConfig, commentOnlyReviews: true });
+    const env = createMockEnv();
+
+    await handleReviewRequested(env, createMockLogger(), reviewRequestedPayload, "trace-co");
+
+    const prompt = promptBodies(env)[0];
+    expect(prompt).toContain('"event": "COMMENT"');
+    expect(prompt).not.toContain("<APPROVE, REQUEST_CHANGES, or COMMENT>");
   });
 
   it("keeps a single session for comment actions", async () => {
