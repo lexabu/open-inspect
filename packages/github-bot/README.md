@@ -79,6 +79,7 @@ The bot is deployed via Terraform as a standalone Cloudflare Worker alongside th
 | `DEFAULT_MODEL`              | Plain text            | Model ID for new sessions (e.g., `anthropic/claude-haiku-4-5`)                      |
 | `GITHUB_BOT_USERNAME`        | Plain text            | Bot's GitHub login (e.g., `my-app[bot]`) for @mention detection and loop prevention |
 | `GITHUB_BOT_COMMAND`         | Plain text (optional) | Short command that also calls the bot (`/npai`, or `npai` at a line start)          |
+| `WEB_APP_URL`                | Plain text            | Web app URL in the one-time "sign in" reply to a sender with no account             |
 | `GITHUB_APP_ID`              | Secret                | GitHub App ID for JWT generation                                                    |
 | `GITHUB_APP_PRIVATE_KEY`     | Secret                | GitHub App private key (must be PKCS#8 format)                                      |
 | `GITHUB_APP_INSTALLATION_ID` | Secret                | GitHub App installation ID for token exchange                                       |

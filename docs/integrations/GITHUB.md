@@ -605,6 +605,12 @@ GitHub issues are ignored. Use the App's handle, with or without `[bot]`: `@my-a
 short command (`npai`) counts only at the very start of a line; see
 [Review Commands](#review-commands).
 
+A sender who has never signed in to the web app has no account, so a session they would own (a
+mention, or a review while the merge gate is off) cannot start. The bot then replies once per pull
+request and sender: "Sign in once at <web app URL> to use @my-app here." It never repeats that
+reply, on a redelivery or a later comment. Reviews started through the
+[AI Review check](#ai-review-check) need no account and are not affected.
+
 ### I see an eyes reaction but no follow-up
 
 The eyes reaction acknowledges the request; it is posted before Open-Inspect admits the request and

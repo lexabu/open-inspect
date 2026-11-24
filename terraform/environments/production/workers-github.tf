@@ -65,6 +65,7 @@ module "github_bot_worker" {
     DEFAULT_MODEL       = { value = var.github_bot_default_model }
     GITHUB_BOT_USERNAME = { value = var.github_bot_username }
     GITHUB_BOT_COMMAND  = { value = var.github_bot_command }
+    WEB_APP_URL         = { value = local.web_app_url }
   }
 
   secrets = {
