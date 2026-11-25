@@ -95,6 +95,7 @@ describe("the untrusted-content escaper", () => {
       isPublic: false,
       headSha: HEAD,
       baseSha: BASE,
+      botLogin: "test-bot[bot]",
     });
     const opens = prompt.match(/<\s*user_content\s+source=/gi) ?? [];
     const closes = prompt.match(/<\s*\/\s*user_content\b/gi) ?? [];

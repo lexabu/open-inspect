@@ -54,7 +54,6 @@ function reviewPromptFor(
   env: Env,
   repo: Pick<ReviewRequestedPayload["repository"], "owner" | "name" | "private">,
   pr: ReviewRequestedPayload["pull_request"],
-  preMerge: boolean,
   focus: FocusRequest | null = null
 ): (config: ResolvedGitHubConfig, reviewer: ReviewerContext | null) => string {
   return (config, reviewer) =>
@@ -74,7 +73,7 @@ function reviewPromptFor(
       isSelfReview: isAuthoredByBot(pr, env),
       reviewer,
       commentOnlyReviews: config.commentOnlyReviews,
-      preMerge,
+      botLogin: env.GITHUB_BOT_USERNAME,
       focus,
       commandTip: config.reviewTip
         ? buildReviewCommandTip(
@@ -109,7 +108,7 @@ export async function handleReviewRequested(
     action: "review",
     reactionPath: `issues/${pr.number}`,
     gated: { headSha: pr.head.sha, base: pr.base },
-    buildPrompt: reviewPromptFor(env, repo, pr, false),
+    buildPrompt: reviewPromptFor(env, repo, pr),
   });
 }
 
@@ -184,7 +183,6 @@ async function rerunReview(
   return reviewHead(env, log, traceId, {
     ...target,
     reactionPath: `issues/${target.pullNumber}`,
-    preMerge: true,
     focus: null,
   });
 }
@@ -206,7 +204,6 @@ async function reviewHead(
     pullNumber: number;
     headSha: string | null;
     reactionPath: string;
-    preMerge: boolean;
     focus: ReviewFocus | null;
   }
 ): Promise<HandlerResult> {
@@ -242,7 +239,6 @@ async function reviewHead(
       env,
       repo,
       pr,
-      target.preMerge,
       focus === null ? null : { focus, requestedBy: sender.login }
     ),
   });
@@ -287,7 +283,7 @@ export async function handlePullRequestOpened(
         action: "auto_review",
         reactionPath: `issues/${pr.number}`,
         gated: { headSha: pr.head.sha, base: pr.base },
-        buildPrompt: reviewPromptFor(env, repo, pr, false),
+        buildPrompt: reviewPromptFor(env, repo, pr),
       })
   );
 }
@@ -345,7 +341,6 @@ export async function handleIssueComment(
       pullNumber: issue.number,
       headSha: null,
       reactionPath: `issues/comments/${comment.id}`,
-      preMerge: false,
       focus: command.focus,
     });
   }
@@ -403,7 +398,6 @@ export async function handleReviewComment(
       pullNumber: pr.number,
       headSha: null,
       reactionPath: `pulls/comments/${comment.id}`,
-      preMerge: false,
       focus: command.focus,
     });
   }

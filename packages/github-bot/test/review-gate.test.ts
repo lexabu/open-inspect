@@ -242,7 +242,7 @@ describe("check re-run", () => {
       headSha: HEAD,
       base: { ref: "main", sha: BASE },
     });
-    expect(request.reviewers[0].prompt).toContain("## Pre-merge Review");
+    expect(request.reviewers[0].prompt).toContain("## Earlier Reviews");
     expect(checkSenderPermission).toHaveBeenCalledWith(
       "installation-token",
       "acme",

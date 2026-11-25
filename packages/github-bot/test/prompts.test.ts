@@ -15,6 +15,7 @@ describe("buildCodeReviewPrompt", () => {
     headSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     baseSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     isPublic: true,
+    botLogin: "test-bot[bot]",
   };
 
   it("names the reviewer and only comments when it is one of several reviewers", () => {
@@ -58,23 +59,54 @@ describe("buildCodeReviewPrompt", () => {
     expect(prompt).toContain("advice only");
   });
 
-  it("pins every review to the head commit and marks the pre-merge pass", () => {
-    const opening = buildCodeReviewPrompt(baseParams);
-    expect(opening).toContain(`git checkout --detach ${baseParams.headSha}`);
-    expect(opening).toContain(
+  it("pins every review to the head commit", () => {
+    const prompt = buildCodeReviewPrompt(baseParams);
+    expect(prompt).toContain(`git checkout --detach ${baseParams.headSha}`);
+    expect(prompt).toContain(
       `gh api -H "Accept: application/vnd.github.diff" repos/acme/widgets/compare/${baseParams.baseSha}...${baseParams.headSha}`
     );
-    expect(opening).toContain("give no verdict");
-    expect(opening).toContain("submit no pull request review");
-    expect(opening).toContain("gh api repos/acme/widgets/issues/42/comments --method POST");
-    expect(opening).toContain(`"commit_id": "${baseParams.headSha}",`);
-    expect(opening).not.toContain("gh pr diff");
-    expect(opening).not.toContain("## Pre-merge Review");
+    expect(prompt).toContain("give no verdict");
+    expect(prompt).toContain("submit no pull request review");
+    expect(prompt).toContain("gh api repos/acme/widgets/issues/42/comments --method POST");
+    expect(prompt).toContain(`"commit_id": "${baseParams.headSha}",`);
+    expect(prompt).not.toContain("gh pr diff");
+  });
 
-    const preMerge = buildCodeReviewPrompt({ ...baseParams, preMerge: true });
-    expect(preMerge).toContain("## Pre-merge Review");
-    expect(preMerge).toContain(`asked for again on commit \`${baseParams.headSha}\``);
-    expect(preMerge).not.toContain("Verdict for the AI Review check");
+  it("has every review answer for the App's earlier findings on the head commit", () => {
+    const prompt = buildCodeReviewPrompt(baseParams);
+    expect(prompt).toContain("## Earlier Reviews");
+    expect(prompt).toContain("gh api repos/acme/widgets/pulls/42/reviews --paginate");
+    expect(prompt).toContain("-f owner='acme' -f name='widgets' -F number=42");
+    expect(prompt).toContain("reviewThreads(first:100)");
+    expect(prompt).toContain("reviews by @test-bot[bot]");
+    expect(prompt).toContain(`against commit \`${baseParams.headSha}\``);
+    expect(prompt).toContain("**Fixed**");
+    expect(prompt).toContain("**Still open**");
+    expect(prompt).not.toContain("Pre-merge");
+    // Read before reviewing, so the list can lead the review body.
+    expect(prompt.indexOf("## Earlier Reviews")).toBeLessThan(prompt.indexOf("## Instructions"));
+  });
+
+  it("resolves only its own threads it verified fixed, after submitting the review", () => {
+    const prompt = buildCodeReviewPrompt(baseParams);
+    const submit = prompt.indexOf(`gh api repos/acme/widgets/pulls/42/reviews \\`);
+    const resolve = prompt.indexOf("resolveReviewThread(input:{threadId:$id})");
+    expect(submit).toBeGreaterThan(-1);
+    expect(resolve).toBeGreaterThan(submit);
+    expect(prompt).toContain("addPullRequestReviewThreadReply");
+    expect(prompt).toContain("Fixed in `aaaaaaa`");
+    expect(prompt).toContain("that one of your earlier reviews started");
+    expect(prompt).toContain("started by anyone else");
+  });
+
+  it("limits each of several reviewers to its own earlier findings", () => {
+    const prompt = buildCodeReviewPrompt({
+      ...baseParams,
+      reviewer: { modelName: "GPT-6.2 Sol (Bedrock)", reviewerCount: 2 },
+    });
+    expect(prompt).toContain(
+      "whose body starts with your reviewer line `**Reviewer: GPT-6.2 Sol (Bedrock)**`"
+    );
   });
 
   it("lets a single reviewer approve or request changes", () => {
@@ -128,7 +160,8 @@ describe("buildCodeReviewPrompt", () => {
 
   it("submits the summary and inline comments in exactly one review", () => {
     const prompt = buildCodeReviewPrompt(baseParams);
-    expect(prompt.match(/repos\/acme\/widgets\/pulls\/42\/reviews/g)).toHaveLength(1);
+    // The one POST; the earlier-review read lists reviews without submitting one.
+    expect(prompt.match(/pulls\/42\/reviews \\\s+--method POST/g)).toHaveLength(1);
     expect(prompt).toContain('"comments": [');
     expect(prompt).toContain('"body": "<inline comment>"');
     expect(prompt).toContain("exactly one pull request review");

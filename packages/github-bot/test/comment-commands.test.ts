@@ -84,8 +84,8 @@ describe("review commands with the merge gate on", () => {
       const prompt: string = request.reviewers[0].prompt;
       expect(prompt).toContain(`compare/${BASE}...${HEAD}`);
       expect(prompt).not.toContain("## Focus");
-      // A comment-triggered review is not a pre-merge re-run.
-      expect(prompt).not.toContain("## Pre-merge Review");
+      // A comment-triggered review answers for earlier findings like any other.
+      expect(prompt).toContain("## Earlier Reviews");
       expect(reactionUrls()).toEqual([
         "https://api.github.com/repos/acme/widgets/issues/comments/100/reactions",
       ]);
