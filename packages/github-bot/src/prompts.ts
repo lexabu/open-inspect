@@ -125,30 +125,32 @@ function buildResolveFixedThreadsStep(params: {
   repositoryPath: string;
   number: number;
   headSha: string;
-  botLogin: string;
   reviewer: ReviewerContext | null;
 }): string {
-  const { repositoryPath, number, headSha, botLogin, reviewer } = params;
+  const { repositoryPath, number, headSha, reviewer } = params;
   if (reviewer) {
     return `
 5. Do not reply in or resolve any review thread: several reviewers share this identity.
 `;
   }
+  const headGuard = `[ "$(gh api repos/${repositoryPath}/pulls/${number} --jq .head.sha)" = "${headSha}" ]`;
   return `
-5. Then, before you write your final message, close out your fixed threads, but only if the pull
-   request's head is still \`${headSha}\` (skip this step if it moved or the check fails):
-
-   gh api repos/${repositoryPath}/pulls/${number} --jq .head.sha
-
-   For each unresolved thread whose first comment is by @${botLogin}, that one of your earlier
-   reviews started, and that your list marks **Fixed**, reply in the thread and then resolve it.
-   These replies are the one exception to "no standalone comments". Leave every other thread as it is.
+5. Then, before you write your final message, close out your fixed threads: each unresolved thread
+   that one of your earlier reviews started and that your list marks **Fixed**. Reply in the thread,
+   then resolve it. These replies are the one exception to "no standalone comments". Leave every
+   other thread as it is.
 
    Write the reply, "Fixed in \`${headSha.slice(0, 7)}\`: <what changed, one line>", to a file with
-   your file tool (never inline it in the command), send it, and resolve only if the reply succeeded:
+   your file tool (never inline it in the command). Run each thread as this one chain, so nothing
+   is written once the pull request's head has moved off \`${headSha}\`, and nothing is resolved
+   unless the reply succeeded:
 
+   ${headGuard} &&
    gh api graphql -f id='<thread id>' -F body=@<reply file> -f query='mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}' &&
+   ${headGuard} &&
    gh api graphql -f id='<thread id>' -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}'
+
+   If the head has moved, stop: the next review answers for the new commit.
 `;
 }
 
@@ -343,7 +345,7 @@ ${buildIndependentReviewerSection(reviewer)}${buildEarlierReviewSection({ owner,
 JSON
 
    ${reviewEventGuidance}
-${buildResolveFixedThreadsStep({ repositoryPath, number, headSha, botLogin, reviewer })}
+${buildResolveFixedThreadsStep({ repositoryPath, number, headSha, reviewer })}
 ${buildCustomInstructionsSection(codeReviewInstructions)}
 ${buildCommentOnlyRule(commentOnlyReviews)}${buildCommandTipSection(commandTip)}${buildCommentGuidelines(isPublic)}`;
 }

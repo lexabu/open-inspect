@@ -111,24 +111,26 @@ describe("buildCodeReviewPrompt", () => {
 
   it("resolves only its own threads it verified fixed, on an unmoved head, before the verdict", () => {
     const prompt = buildCodeReviewPrompt(baseParams);
+    const guard = `[ "$(gh api repos/acme/widgets/pulls/42 --jq .head.sha)" = "${baseParams.headSha}" ] &&`;
     const submit = prompt.indexOf(`gh api repos/acme/widgets/pulls/42/reviews \\`);
-    const headCheck = prompt.indexOf("gh api repos/acme/widgets/pulls/42 --jq .head.sha");
+    const firstGuard = prompt.indexOf(guard);
     const reply = prompt.indexOf("addPullRequestReviewThreadReply");
+    const secondGuard = prompt.indexOf(guard, reply);
     const resolve = prompt.indexOf("resolveReviewThread(input:{threadId:$id})");
+    // Head check, reply, head check again, resolve: one && chain after the review is submitted.
     expect(submit).toBeGreaterThan(-1);
-    expect(headCheck).toBeGreaterThan(submit);
-    expect(reply).toBeGreaterThan(headCheck);
-    expect(resolve).toBeGreaterThan(reply);
+    expect(firstGuard).toBeGreaterThan(submit);
+    expect(reply).toBeGreaterThan(firstGuard);
+    expect(secondGuard).toBeGreaterThan(reply);
+    expect(resolve).toBeGreaterThan(secondGuard);
+    expect(prompt).toContain("{comment{id}}}' &&\n   [ \"$(gh api");
     expect(prompt).toContain("before you write your final message");
-    expect(prompt).toContain(
-      `only if the pull\n   request's head is still \`${baseParams.headSha}\``
-    );
-    expect(prompt).toContain("whose first comment is by @test-bot[bot]");
-    expect(prompt).toContain("that one of your earlier\n   reviews started");
+    expect(prompt).toContain("that one of your earlier reviews started");
+    // Authorship comes from the App's own review ids; a GraphQL login check would never match.
+    expect(prompt).not.toContain("first comment is by @");
     // The reply text comes from a file, so quotes in it cannot break the command.
     expect(prompt).toContain("-F body=@<reply file>");
     expect(prompt).toContain("Fixed in `aaaaaaa`");
-    expect(prompt).toContain("{comment{id}}}' &&\n   gh api graphql");
   });
 
   it("has several reviewers list their own findings but never resolve threads", () => {
